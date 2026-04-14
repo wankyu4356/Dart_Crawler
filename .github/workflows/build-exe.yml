@@ -26,6 +26,11 @@ concurrency:
   group: build-exe
   cancel-in-progress: false   # 빌드 중복 방지하되 도중 취소는 안 함
 
+# GitHub 의 기본 JS action runtime 을 Node 24 로 강제 (Node 20 은 deprecated).
+# 2026-06-02 이후엔 자동 적용되지만 미리 켜 둬서 경고 제거.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: windows-latest
