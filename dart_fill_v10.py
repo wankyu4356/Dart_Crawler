@@ -190,6 +190,90 @@ def fetch(corp_code, year):
     return [], None
 
 
+def _dart_get(endpoint, **params):
+    """
+    공통 GET 헬퍼. 성공 시 list 반환, 실패/빈 응답 시 빈 리스트.
+    일부 엔드포인트(대량보유, 임원·주요주주 소유)는 reprt_code/bsns_year를
+    받지 않으므로, 400대 에러 또는 status != 000 이면 그 파라미터들을 제거하고
+    재시도한다.
+    """
+    params_full = {**params, "crtfc_key": API_KEY}
+    try:
+        r = requests.get(f"{BASE_URL}/{endpoint}", params=params_full, timeout=20)
+        d = r.json()
+        if d.get("status") == "000":
+            return d.get("list", []) or []
+        # 파라미터 불일치 시 폴백: reprt_code/bsns_year 제거 후 재시도
+        if d.get("status") in ("010","011","013","020","100","800","900"):
+            fallback = {k: v for k, v in params.items()
+                        if k not in ("reprt_code", "bsns_year")}
+            fallback["crtfc_key"] = API_KEY
+            r2 = requests.get(f"{BASE_URL}/{endpoint}",
+                              params=fallback, timeout=20)
+            d2 = r2.json()
+            if d2.get("status") == "000":
+                return d2.get("list", []) or []
+    except Exception:
+        pass
+    return []
+
+
+# (시트명, 엔드포인트) — 기업분석용 공시 항목 전체
+SECTIONS = [
+    ("주주_최대",      "hyslrSttus.json"),
+    ("주주_최대변동",  "hyslrChgSttus.json"),
+    ("주주_소액",      "mrhlSttus.json"),
+    ("주주_대량보유",  "majorstock.json"),
+    ("주주_임원소유",  "elestock.json"),
+    ("배당",           "alotMatter.json"),
+    ("자기주식",       "tsstkAcqsDspsSttus.json"),
+    ("증자감자",       "irdsSttus.json"),
+    ("임원",           "exctvSttus.json"),
+    ("직원",           "empSttus.json"),
+    ("보수_이사감사",  "drctrAdtAllMendngSttus.json"),
+    ("보수_개인",      "hmvAuditIndvdlBySttus.json"),
+    ("타법인출자",     "otrCprInvstmntSttus.json"),
+    ("감사의견",       "accnutAdtorNmNdAdtOpinion.json"),
+]
+
+
+def collect_sections(wb, corp_code, years, log):
+    """
+    각 섹션을 연도별로 조회해 워크북에 시트로 추가/갱신한다.
+    - 재무 시트(기존 고정 레이아웃)는 건드리지 않는다.
+    - 섹션별 신규 시트를 생성하여 연도·전체 필드를 그대로 기록한다.
+    """
+    valid_years = [y for y in years if y]
+    for sheet_name, endpoint in SECTIONS:
+        rows_all = []
+        headers = None
+        for y in valid_years:
+            items = _dart_get(endpoint,
+                              corp_code=corp_code,
+                              bsns_year=str(y),
+                              reprt_code="11011")
+            if not items:
+                continue
+            # 첫 성공 응답의 키 순서로 헤더 고정
+            if headers is None:
+                headers = ["조회연도"] + list(items[0].keys())
+            for it in items:
+                rows_all.append([y] + [it.get(k, "") for k in headers[1:]])
+            time.sleep(0.2)
+
+        if sheet_name in wb.sheetnames:
+            del wb[sheet_name]
+        ws = wb.create_sheet(sheet_name)
+        if headers and rows_all:
+            ws.append(headers)
+            for r in rows_all:
+                ws.append(r)
+            log(f"    {sheet_name}: {len(rows_all)}행")
+        else:
+            ws.append(["(데이터 없음)"])
+            log(f"    {sheet_name}: 없음")
+
+
 def fetch_xbrl(corp_code, year):
     """
     XBRL 전체 계정 조회 — fnlttSinglAcntAll 에 없는 주석 항목 탐색용
@@ -396,7 +480,7 @@ def validate(vals, year, log):
         log(f"\n  ⚠ {year} 매출액({rev:,}) 비정상. 단위 확인 필요.")
 
 
-def run(company, xlsx_path, sheet_name, log):
+def run(company, xlsx_path, sheet_name, log, include_all=True):
     try:
         log(f"[1] 검색: {company}")
         corp_code, corp_cls, matched = search_corp(company, log)
@@ -454,8 +538,12 @@ def run(company, xlsx_path, sheet_name, log):
             log(f" 완료({cnt}/{len(ROW_MAP)}){tag}{dtag}{mtag}")
             time.sleep(0.3)
 
+        if include_all:
+            log("\n[4] 주주/배당/임원 등 전체 공시 항목 수집")
+            collect_sections(wb, corp_code, years, log)
+
         wb.save(xlsx_path)
-        log(f"\n[4] 저장: {os.path.basename(xlsx_path)}")
+        log(f"\n[{'5' if include_all else '4'}] 저장: {os.path.basename(xlsx_path)}")
 
         log("\n" + "-"*86)
         log("  최종 검증 (단위: 백만원)")
@@ -528,6 +616,13 @@ class App(tk.Tk):
             text="1번 시트 -> 1   /   2번 시트 -> 2",
             foreground="#888").grid(row=2,column=2,sticky="w")
 
+        self.v_all = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            frm,
+            text="주주구성·배당·임원·자기주식 등 전체 공시 항목 포함 (별도 시트 생성)",
+            variable=self.v_all,
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
         frm.columnconfigure(1, weight=1)
         self.btn = ttk.Button(self, text="▶  실행", command=self._run)
         self.btn.pack(pady=6)
@@ -568,8 +663,10 @@ class App(tk.Tk):
         self.box.config(state="disabled")
         self.btn.config(state="disabled", text="조회 중...")
 
+        include_all = self.v_all.get()
+
         def task():
-            ok = run(co, xl, sh, self._log)
+            ok = run(co, xl, sh, self._log, include_all=include_all)
             self.btn.config(state="normal", text="▶  실행")
             if ok:
                 messagebox.showinfo("완료",
