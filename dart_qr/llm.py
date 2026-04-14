@@ -1,0 +1,226 @@
+# -*- coding: utf-8 -*-
+"""M7 — Anthropic Claude 기반 공시 요약 + Implication + Executive Summary.
+
+설계:
+  • 시스템 프롬프트는 역할·출력 스키마로 분리 + prompt caching 활성화
+    → 다건 호출 시 입력 토큰 비용 급감.
+  • 병렬 호출은 `concurrent.futures.ThreadPoolExecutor` (max_workers=4).
+  • 출력 파싱은 ```json ...``` 블록 우선, 실패 시 첫 `{ ... }` 스캔.
+    모두 실패하면 summary 에 raw text 저장, llm_status='error'.
+"""
+from __future__ import annotations
+import json
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, List, Optional
+
+from .config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
+from .disclosures import Disclosure
+
+
+# ── 시스템 프롬프트 (캐시 적용) ──────────────────────────────────────────
+SYSTEM_PROMPT = """당신은 사모펀드(PE) 투자심사역입니다. 한국 상장·비상장 기업의
+DART 공시를 읽고 투자의사결정 관점에서 실질을 꿰뚫는 코멘트를 작성합니다.
+다음 원칙을 엄격히 지킵니다:
+
+1) **사실과 해석 분리**: summary 는 공시 본문에 적힌 사실만. implication 은 PE 관점의 해석.
+2) **M&A · 자금조달 · 지배구조 · 리스크 · 기회** 5개 렌즈로 시사점을 판단.
+3) **숫자 인용**: 금액/비율/일자는 본문에서 확인되는 경우만. 추정 금지.
+4) **간결**: summary 3~4줄, key_points 3~5개, implication 2~4줄.
+5) 반드시 **순수 JSON** 으로만 응답. 마크다운/주석 없이."""
+
+SCHEMA_HINT = """아래 JSON 스키마로 응답하세요:
+{
+  "summary": "3~4줄 한국어 요약",
+  "key_points": ["핵심 사실 1", "핵심 사실 2", "핵심 사실 3"],
+  "implication": "PE 투자관점 시사점"
+}"""
+
+
+def _build_user_prompt(corp_name: str, title: str, date: str, ty_label: str, body: str) -> str:
+    return (
+        f"{SCHEMA_HINT}\n\n"
+        f"회사: {corp_name}\n"
+        f"공시일: {date}\n"
+        f"공시유형: {ty_label}\n"
+        f"공시 제목: {title}\n"
+        f"---- 본문 발췌 ----\n{body}\n"
+    )
+
+
+# ── JSON 파싱 ────────────────────────────────────────────────────────────
+_CODEBLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
+
+
+def _parse_json(text: str) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+    m = _CODEBLOCK_RE.search(text)
+    candidate = m.group(1) if m else None
+    if candidate is None:
+        m2 = _OBJECT_RE.search(text)
+        candidate = m2.group(0) if m2 else None
+    if candidate is None:
+        return None
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+
+# ── Anthropic 클라이언트 ────────────────────────────────────────────────
+_client = None
+
+
+def get_client(api_key: Optional[str] = None):
+    """Anthropic 클라이언트 싱글턴. 키 미지정 시 ANTHROPIC_API_KEY 사용."""
+    global _client
+    if _client is not None and api_key is None:
+        return _client
+    try:
+        from anthropic import Anthropic
+    except ImportError as e:
+        raise RuntimeError(
+            "anthropic 패키지 설치 필요: pip install anthropic"
+        ) from e
+    key = api_key or ANTHROPIC_API_KEY
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY 미설정")
+    _client = Anthropic(api_key=key)
+    return _client
+
+
+# ── 단건 요약 ────────────────────────────────────────────────────────────
+def summarize_disclosure(
+    disc: Disclosure,
+    client=None,
+    model: str = ANTHROPIC_MODEL,
+    max_tokens: int = 800,
+) -> Disclosure:
+    """in-place 로 disc.summary/key_points/implication/llm_status 채움."""
+    if not disc.body:
+        disc.llm_status = "skipped"
+        return disc
+    client = client or get_client()
+    user = _build_user_prompt(
+        corp_name=disc.corp_name,
+        title=disc.report_nm,
+        date=disc.rcept_dt,
+        ty_label=disc.ty_label,
+        body=disc.body,
+    )
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": user}],
+        )
+        # resp.content 는 블록 리스트
+        parts = []
+        for block in resp.content:
+            txt = getattr(block, "text", None)
+            if txt:
+                parts.append(txt)
+        raw = "\n".join(parts).strip()
+        parsed = _parse_json(raw)
+        if parsed is None:
+            disc.summary = raw[:400] or "(빈 응답)"
+            disc.llm_status = "error"
+        else:
+            disc.summary = str(parsed.get("summary", "")).strip()
+            kp = parsed.get("key_points") or []
+            if isinstance(kp, list):
+                disc.key_points = [str(x).strip() for x in kp if str(x).strip()]
+            disc.implication = str(parsed.get("implication", "")).strip()
+            disc.llm_status = "ok"
+    except Exception as exc:  # noqa: BLE001
+        disc.summary = f"(LLM 오류: {exc})"
+        disc.llm_status = "error"
+    return disc
+
+
+# ── 병렬 요약 ────────────────────────────────────────────────────────────
+def summarize_batch(
+    discs: List[Disclosure],
+    client=None,
+    max_workers: int = 4,
+    log: Optional[Callable[[str], None]] = None,
+) -> None:
+    client = client or get_client()
+    targets = [d for d in discs if d.body and d.llm_status == "pending"]
+    if not targets:
+        return
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(summarize_disclosure, d, client): d for d in targets}
+        done = 0
+        for fut in as_completed(futures):
+            d = futures[fut]
+            try:
+                fut.result()
+            except Exception as exc:  # noqa: BLE001
+                d.llm_status = "error"
+                d.summary = f"(LLM 오류: {exc})"
+            done += 1
+            if log:
+                log(f"  LLM {done}/{len(targets)}: {d.rcept_dt} {d.report_nm[:30]} [{d.llm_status}]")
+
+
+# ── Executive Summary ───────────────────────────────────────────────────
+EXEC_SYSTEM = """당신은 PE 투자심사역입니다. 한 회사의 일정 기간 공시 이슈 요약
+모음을 받아, 투자위원회에 제출할 **Executive Summary(경영진 요약)** 를
+마크다운으로 작성합니다. 섹션:
+1. **한 문장 총평**
+2. **핵심 변화** (지배구조·M&A·자금조달·매출/실적 트렌드 중 실제 확인된 것만)
+3. **주요 리스크**
+4. **기회·투자포인트**
+5. **즉시 확인 필요사항** (DD 시 파고들 포인트)
+공시에 근거하지 않은 추정은 금지. 숫자는 본문에 있는 것만 인용."""
+
+
+def build_executive_summary(
+    profile_summary: str,
+    disclosures: List[Disclosure],
+    client=None,
+    model: str = ANTHROPIC_MODEL,
+    max_tokens: int = 1500,
+) -> str:
+    client = client or get_client()
+    # 본문 요약된 공시만 사용
+    pieces = []
+    for d in disclosures:
+        if d.llm_status != "ok":
+            continue
+        pieces.append(
+            f"- [{d.rcept_dt}] ({d.ty_label}) {d.report_nm}\n"
+            f"  요약: {d.summary}\n"
+            f"  시사점: {d.implication}"
+        )
+    if not pieces:
+        return "(분석된 공시가 없어 Executive Summary를 생성할 수 없습니다.)"
+    body = "\n".join(pieces[:60])  # 과도한 입력 방지
+
+    user = (
+        f"회사 기본정보:\n{profile_summary}\n\n"
+        f"분석된 공시 이슈 모음:\n{body}"
+    )
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": EXEC_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": user}],
+        )
+        parts = [getattr(b, "text", "") for b in resp.content]
+        return "\n".join(p for p in parts if p).strip()
+    except Exception as exc:  # noqa: BLE001
+        return f"(Executive Summary 생성 실패: {exc})"

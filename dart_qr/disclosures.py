@@ -1,0 +1,133 @@
+# -*- coding: utf-8 -*-
+"""M6 — 공시 목록 조회 + 본문 추출.
+
+  • `list.json` 페이징 순회로 기간 내 전체 공시 수집.
+  • 중요 공시(`pblntf_ty in {A,B,D}`)는 `document.xml` 을 다운로드해
+    ZIP 해제 후 텍스트만 추출. Claude 입력용으로 길이 cap.
+"""
+from __future__ import annotations
+import io
+import re
+import zipfile
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+from xml.etree import ElementTree as ET
+
+from .config import DART_VIEWER_URL, IMPORTANT_PBLNTF_TY, PBLNTF_TY_LABEL
+from . import dart_api as api
+
+
+# ── DTO ──────────────────────────────────────────────────────────────────
+@dataclass
+class Disclosure:
+    rcept_no: str
+    rcept_dt: str                 # YYYYMMDD
+    corp_name: str
+    report_nm: str
+    flr_nm: str = ""              # 공시 제출인
+    pblntf_ty: str = ""
+    pblntf_detail_ty: str = ""
+    rm: str = ""
+    # LLM 단계에서 채워질 필드
+    body: str = ""
+    summary: str = ""
+    key_points: List[str] = field(default_factory=list)
+    implication: str = ""
+    llm_status: str = "pending"   # pending | skipped | ok | error
+
+    @property
+    def ty_label(self) -> str:
+        return PBLNTF_TY_LABEL.get(self.pblntf_ty, self.pblntf_ty or "-")
+
+    @property
+    def is_important(self) -> bool:
+        return (self.pblntf_ty or "").upper() in IMPORTANT_PBLNTF_TY
+
+    @property
+    def viewer_url(self) -> str:
+        return DART_VIEWER_URL.format(rcept_no=self.rcept_no)
+
+
+# ── 목록 조회 ────────────────────────────────────────────────────────────
+def fetch_list(corp_code: str, bgn_de: str, end_de: str) -> List[Disclosure]:
+    rows = api.iter_all_disclosures(corp_code, bgn_de, end_de)
+    out: List[Disclosure] = []
+    for r in rows:
+        out.append(Disclosure(
+            rcept_no=str(r.get("rcept_no", "")).strip(),
+            rcept_dt=str(r.get("rcept_dt", "")).strip(),
+            corp_name=r.get("corp_name", ""),
+            report_nm=r.get("report_nm", ""),
+            flr_nm=r.get("flr_nm", ""),
+            pblntf_ty=r.get("pblntf_ty", ""),
+            pblntf_detail_ty=r.get("pblntf_detail_ty", ""),
+            rm=r.get("rm", ""),
+        ))
+    # 최신 접수일 우선 정렬
+    out.sort(key=lambda d: (d.rcept_dt, d.rcept_no), reverse=True)
+    return out
+
+
+# ── 본문 추출 ────────────────────────────────────────────────────────────
+_WS_RE = re.compile(r"\s+")
+
+
+def _xml_text(xml_bytes: bytes) -> str:
+    """XML 에서 의미 있는 텍스트만 공백으로 병합."""
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        # 단순 fallback — 태그 제거
+        raw = xml_bytes.decode("utf-8", errors="ignore")
+        raw = re.sub(r"<[^>]+>", " ", raw)
+        return _WS_RE.sub(" ", raw).strip()
+    pieces: List[str] = []
+    for el in root.iter():
+        if el.text and el.text.strip():
+            pieces.append(el.text.strip())
+        if el.tail and el.tail.strip():
+            pieces.append(el.tail.strip())
+    return _WS_RE.sub(" ", " ".join(pieces)).strip()
+
+
+def fetch_body(rcept_no: str, cap: int = 30000) -> str:
+    """`document.xml` → ZIP 해제 → 모든 XML 텍스트 합쳐 리턴. 실패 시 ''."""
+    data = api.document_zip(rcept_no)
+    if not data:
+        return ""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            names = [n for n in zf.namelist() if n.lower().endswith(".xml")]
+            texts: List[str] = []
+            for n in names:
+                try:
+                    t = _xml_text(zf.read(n))
+                except Exception:
+                    continue
+                if t:
+                    texts.append(t)
+        text = "\n\n".join(texts)
+    except zipfile.BadZipFile:
+        return ""
+    if cap and len(text) > cap:
+        text = text[:cap] + "\n...[본문 cap]"
+    return text
+
+
+def fill_bodies_for_important(
+    discs: List[Disclosure],
+    limit: Optional[int] = None,
+    cap: int = 30000,
+    log=None,
+) -> None:
+    """중요 공시 대상으로 본문 채우기 (in-place).
+
+    `limit` 지정 시 상위 N건만 처리 (최신순).
+    """
+    important = [d for d in discs if d.is_important]
+    if limit is not None:
+        important = important[:limit]
+    for i, d in enumerate(important, 1):
+        if log:
+            log(f"  [{i}/{len(important)}] {d.rcept_dt} {d.report_nm[:40]}")
+        d.body = fetch_body(d.rcept_no, cap=cap)
