@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""DART QuickReport — 엔트리 포인트.
+"""DART QuickReport — 엔트리 포인트 (PyInstaller --onefile).
 
-PyInstaller `--onefile` 대상. GUI 기본 실행, `--cli` 플래그로 CLI 실행 가능.
+GUI 기본. `--cli` 플래그로 CLI 사용. 빌드된 .exe 는 시작 시 GitHub Release
+에서 최신 버전을 자동 확인하고, 필요하면 자기 자신을 교체 후 재시작.
 
 사용 예 (개발):
     python dart_quickreport.py                    # GUI
@@ -37,10 +38,32 @@ def _run_cli(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_gui() -> int:
+    """업데이트 체크 (Splash 표시) → 본 GUI 진입."""
+    from dart_qr.splash import Splash
+    from dart_qr.updater import bootstrap_update_or_pass
+
+    splash = Splash()
+    try:
+        bootstrap_update_or_pass(log=splash.log)
+        # 업데이트가 있었으면 위에서 sys.exit() 했으므로 아래로 못 옴
+        splash.log("준비 완료. 메인 화면을 띄우는 중…")
+    finally:
+        splash.close()
+
+    from dart_qr.app import main as gui_main
+    gui_main()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="DART QuickReport")
     parser.add_argument("--cli", action="store_true",
                         help="GUI 대신 CLI 실행")
+    parser.add_argument("--no-update", action="store_true",
+                        help="자가 업데이트 확인 건너뛰기")
+    parser.add_argument("--version", action="store_true",
+                        help="버전 출력 후 종료")
     parser.add_argument("company", nargs="?", default="",
                         help="회사명 (CLI 모드 필수)")
     parser.add_argument("-p", "--period", type=int, default=2,
@@ -57,15 +80,21 @@ def main() -> int:
                         help="출력 폴더")
     args = parser.parse_args()
 
+    if args.version:
+        from dart_qr import __version__
+        print(f"DART QuickReport {__version__}")
+        return 0
+
+    if args.no_update:
+        import os
+        os.environ["DART_QR_NO_UPDATE"] = "1"
+
     if args.cli:
         if not args.company:
             parser.error("--cli 모드에서는 회사명이 필요합니다.")
         return _run_cli(args)
 
-    # GUI
-    from dart_qr.app import main as gui_main
-    gui_main()
-    return 0
+    return _run_gui()
 
 
 if __name__ == "__main__":
