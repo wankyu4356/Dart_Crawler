@@ -153,6 +153,20 @@ def fnltt_singl_acnt(corp_code: str, bsns_year: str, reprt_code: str):
     )
 
 
+def fnltt_singl_acnt_all(
+    corp_code: str, bsns_year: str, reprt_code: str, fs_div: str = "CFS",
+):
+    """전체 재무제표 라인 (BS/IS/CIS/CF/SCE).
+
+    fs_div: CFS=연결, OFS=별도. 호출자가 폴백 처리.
+    """
+    return get_list(
+        "fnlttSinglAcntAll.json",
+        corp_code=corp_code, bsns_year=bsns_year,
+        reprt_code=reprt_code, fs_div=fs_div,
+    )
+
+
 def fnltt_singl_indx(corp_code: str, bsns_year: str, reprt_code: str, idx_cl_code: str):
     return get_list(
         "fnlttSinglIndx.json",

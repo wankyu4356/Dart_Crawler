@@ -14,7 +14,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from .disclosures import Disclosure
-from .financials import FinancialsBundle, KEY_LABEL, format_krw, yoy
+from .financials import (
+    BALANCE_KEYS, FinancialsBundle, KEY_LABEL, PCT_KEYS, PERFORMANCE_KEYS,
+    format_value, yoy,
+)
 from .profile import Profile
 from .shareholders import ShareholderBundle, top_holder_summary
 
@@ -23,6 +26,10 @@ HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill("solid", fgColor="305496")
 SUBHEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
 WRAP = Alignment(wrap_text=True, vertical="top")
+
+# 셀 표시 포맷 — 값은 raw 숫자(원 단위)로 저장하고 표시만 포맷
+KRW_FMT = '#,##0'           # 1,234,567,890
+PCT_FMT = '0.0"%";\\-0.0"%";"-"'  # 12.3% / -12.3% / -
 
 
 def _style_header(ws, row: int, ncols: int) -> None:
@@ -86,30 +93,53 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
     ws.append(headers)
     _style_header(ws, 1, len(headers))
 
-    for key, label in KEY_LABEL.items():
-        row = [label]
-        for y in fin.annual:
-            v = y.values.get(key)
-            row.append(format_krw(v))
-        if fin.latest_quarter:
-            row.append(format_krw(fin.latest_quarter.values.get(key)))
-        ws.append(row)
+    def _emit_block(title: str, keys: List[str]) -> None:
+        ws.append([title])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="305496")
+        ws.cell(row=ws.max_row, column=1).fill = SUBHEADER_FILL
+        for key in keys:
+            label = KEY_LABEL.get(key, key)
+            # raw 숫자 저장 (None 은 빈 셀)
+            row: List[Any] = [label]
+            for y in fin.annual:
+                row.append(y.values.get(key))
+            if fin.latest_quarter:
+                row.append(fin.latest_quarter.values.get(key))
+            ws.append(row)
+            # 셀 포맷 적용 — % 키는 percentage 표기, 그 외는 원단위 콤마
+            fmt = PCT_FMT if key in PCT_KEYS else KRW_FMT
+            for c in range(2, len(headers) + 1):
+                cell = ws.cell(row=ws.max_row, column=c)
+                cell.number_format = fmt
+                cell.alignment = Alignment(horizontal="right")
 
-    # YoY 행 (매출 기준). annual은 최신→과거 순이므로, 각 연도의 이전 연도는
-    # annual[i+1]. 마지막 연도는 비교 불가 → "-".
+    _emit_block("◆ Performance (손익)", PERFORMANCE_KEYS)
+    ws.append([])
+    _emit_block("◆ Balance Sheet", BALANCE_KEYS)
+
+    # YoY 영역 (매출/영업이익/순이익) — 셀에 raw 숫자(% 값) 저장 후 PCT_FMT
     if len(fin.annual) >= 2:
-        yoy_row = ["매출 YoY (%)"]
-        for i, y in enumerate(fin.annual):
-            if i + 1 >= len(fin.annual):
-                yoy_row.append("-")
-                continue
-            curr_rev = y.values.get("revenue")
-            prev_rev = fin.annual[i + 1].values.get("revenue")
-            v = yoy(curr_rev, prev_rev)
-            yoy_row.append(f"{v:+.1f}%" if v is not None else "-")
-        if fin.latest_quarter:
-            yoy_row.append("-")
-        ws.append(yoy_row)
+        ws.append([])
+        ws.append(["◆ YoY 성장률 (매출/영업이익/순이익)"])
+        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="305496")
+        ws.cell(row=ws.max_row, column=1).fill = SUBHEADER_FILL
+        for key, label in [("revenue", "매출 YoY"), ("op_income", "영업이익 YoY"),
+                           ("net_income", "순이익 YoY")]:
+            r: List[Any] = [label]
+            for i, y in enumerate(fin.annual):
+                if i + 1 >= len(fin.annual):
+                    r.append(None)
+                    continue
+                curr = y.values.get(key)
+                prev = fin.annual[i + 1].values.get(key)
+                r.append(yoy(curr, prev))
+            if fin.latest_quarter:
+                r.append(None)
+            ws.append(r)
+            for c in range(2, len(headers) + 1):
+                cell = ws.cell(row=ws.max_row, column=c)
+                cell.number_format = PCT_FMT
+                cell.alignment = Alignment(horizontal="right")
 
     _autofit(ws, max_width=28)
 
