@@ -214,33 +214,60 @@ class App(tk.Tk):
         card1.grid_columnconfigure(1, weight=1)
 
         # Card 2: LLM 설정
-        card2 = ttk.Labelframe(wrap, text=" LLM 분석 설정 ", style="Card.TLabelframe")
+        card2 = ttk.Labelframe(wrap, text=" LLM 분석 설정 (Claude) ",
+                               style="Card.TLabelframe")
         card2.pack(fill="x", pady=(0, 10))
 
-        self.var_analyze = tk.BooleanVar(value=True)
-        ttk.Checkbutton(card2, text="주요 공시 요약 · Implication · 회사개요 생성 (Claude 사용)",
-                        variable=self.var_analyze).grid(
-            row=0, column=0, columnspan=3, sticky="w", padx=4, pady=4)
+        # ── Claude 작업 토글 5종 (모두 독립) ──
+        self.var_summarize = tk.BooleanVar(value=True)
+        self.var_exec_summary = tk.BooleanVar(value=True)
+        self.var_biz_profile = tk.BooleanVar(value=True)
+        self.var_footnotes = tk.BooleanVar(value=True)
+        self.var_da_llm = tk.BooleanVar(value=True)
+
+        ttk.Checkbutton(card2,
+                        text="① 공시 요약 · 시사점 (Summary + Key Points + Implication)",
+                        variable=self.var_summarize).grid(
+            row=0, column=0, columnspan=5, sticky="w", padx=4, pady=(4, 0))
+        ttk.Checkbutton(card2,
+                        text="② Executive Summary (경영진 종합 요약 — ①이 재료)",
+                        variable=self.var_exec_summary).grid(
+            row=1, column=0, columnspan=5, sticky="w", padx=4)
+        ttk.Checkbutton(card2,
+                        text="③ Business Profile (회사 개요 · 사업부 구조)",
+                        variable=self.var_biz_profile).grid(
+            row=2, column=0, columnspan=5, sticky="w", padx=4)
+        ttk.Checkbutton(card2,
+                        text="④ Footnotes (감사보고서/사업보고서 주요 주석 정리)",
+                        variable=self.var_footnotes).grid(
+            row=3, column=0, columnspan=5, sticky="w", padx=4)
+        ttk.Checkbutton(card2,
+                        text="⑤ D&A 본문 LLM 보강 (API 로 못 잡은 연도 자동 채움)",
+                        variable=self.var_da_llm).grid(
+            row=4, column=0, columnspan=5, sticky="w", padx=4, pady=(0, 4))
+
+        ttk.Separator(card2, orient="horizontal").grid(
+            row=5, column=0, columnspan=5, sticky="we", padx=4, pady=4)
 
         ttk.Label(card2, text="분석 최대 건수", style="Field.TLabel").grid(
-            row=0, column=3, sticky="e", padx=(20, 4))
+            row=6, column=0, sticky="w", padx=4, pady=6)
         self.var_limit = tk.IntVar(value=20)
         ttk.Spinbox(card2, from_=1, to=200, width=6,
-                    textvariable=self.var_limit).grid(row=0, column=4, sticky="w", padx=4)
+                    textvariable=self.var_limit).grid(row=6, column=1, sticky="w", padx=4)
 
         ttk.Label(card2, text="Claude 모델", style="Field.TLabel").grid(
-            row=1, column=0, sticky="w", padx=4, pady=6)
+            row=7, column=0, sticky="w", padx=4, pady=6)
         self.var_model = tk.StringVar(value=cfgmod.ANTHROPIC_MODEL)
         ttk.Combobox(card2, textvariable=self.var_model,
                      values=cfgmod.AVAILABLE_MODELS,
                      width=28, state="readonly").grid(
-            row=1, column=1, columnspan=2, sticky="w", padx=4)
+            row=7, column=1, columnspan=2, sticky="w", padx=4)
 
         ttk.Label(card2, text="Anthropic API Key", style="Field.TLabel").grid(
-            row=2, column=0, sticky="w", padx=4, pady=6)
+            row=8, column=0, sticky="w", padx=4, pady=6)
         self.var_key = tk.StringVar(value=cfgmod.ANTHROPIC_API_KEY)
         ttk.Entry(card2, textvariable=self.var_key, show="•", width=56).grid(
-            row=2, column=1, columnspan=4, sticky="we", padx=4)
+            row=8, column=1, columnspan=4, sticky="we", padx=4)
 
         card2.grid_columnconfigure(1, weight=1)
 
@@ -378,7 +405,11 @@ class App(tk.Tk):
             company=company,
             period_value=int(self.var_period.get()),
             period_unit=self.var_unit.get(),
-            analyze_bodies=bool(self.var_analyze.get()),
+            summarize_disclosures=bool(self.var_summarize.get()),
+            exec_summary=bool(self.var_exec_summary.get()),
+            business_profile=bool(self.var_biz_profile.get()),
+            footnotes=bool(self.var_footnotes.get()),
+            da_llm_fallback=bool(self.var_da_llm.get()),
             body_limit=int(self.var_limit.get()) or None,
             years_back=int(self.var_years.get()),
             output_dir=self.var_outdir.get().strip() or ".",

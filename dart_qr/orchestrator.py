@@ -38,13 +38,36 @@ class RunConfig:
     company: str
     period_value: int = 2
     period_unit: str = "년"          # '년' | '개월'
-    analyze_bodies: bool = True       # 중요 공시 본문 분석 여부
+    # ─── 개별 Claude 작업 토글 (모두 독립) ─────────────────────
+    # 공시 본문 요약 · key_points · Implication (한 번의 Claude 호출로 묶음)
+    summarize_disclosures: bool = True
+    # 경영진 요약 (요약된 공시들을 재료로 종합) — summarize_disclosures 필수
+    exec_summary: bool = True
+    # 회사 개요 · 사업부 구조
+    business_profile: bool = True
+    # 감사보고서/사업보고서 주석 주요 항목 추출
+    footnotes: bool = True
+    # API 로 못 잡은 D&A 를 본문에서 LLM 으로 보강
+    da_llm_fallback: bool = True
+    # ─── 그 외 설정 ────────────────────────────────────────────
     body_limit: Optional[int] = 20    # LLM 호출 상한 (None = 무제한)
     years_back: int = 4               # 연간 재무 조회 연수
     output_dir: str = "."
     anthropic_api_key: Optional[str] = None
     anthropic_model: Optional[str] = None   # None 이면 config.ANTHROPIC_MODEL 사용
     save_log: bool = True             # 상세 로그 파일(_log_회사_시각.txt) 저장 여부
+
+    def needs_llm(self) -> bool:
+        """어느 하나라도 Claude 가 필요한 작업이 켜져 있는가?"""
+        return any([
+            self.summarize_disclosures, self.exec_summary,
+            self.business_profile, self.footnotes, self.da_llm_fallback,
+        ])
+
+    # 하위 호환: 기존에 analyze_bodies 로 참조하던 코드 대응
+    @property
+    def analyze_bodies(self) -> bool:
+        return self.needs_llm()
 
 
 @dataclass
@@ -344,8 +367,11 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
         log(f"[로그파일] {_log_path}")
         log(f"[환경] Python {sys.version.split()[0]} · {platform.platform()}")
         log(f"[설정] company={cfg.company} period={cfg.period_value}{cfg.period_unit} "
-            f"years_back={cfg.years_back} analyze_bodies={cfg.analyze_bodies} "
-            f"body_limit={cfg.body_limit} model={cfg.anthropic_model or 'default'}")
+            f"years_back={cfg.years_back} body_limit={cfg.body_limit} "
+            f"model={cfg.anthropic_model or 'default'}")
+        log(f"[LLM] summarize={cfg.summarize_disclosures} exec={cfg.exec_summary} "
+            f"biz={cfg.business_profile} footnotes={cfg.footnotes} "
+            f"da_fallback={cfg.da_llm_fallback}")
 
     try:
         return _run_quickreport_impl(cfg, log)
@@ -379,9 +405,9 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
 
     is_listed = (profile.corp_cls or "").upper() in ("Y", "K", "N")
 
-    # 비상장은 감사보고서 파싱에 Claude 가 필요
+    # 비상장은 감사보고서 파싱에 Claude 가 필요 (구 로직은 analyze_bodies 단일 체크였음)
     llm_client = None
-    if cfg.analyze_bodies or not is_listed:
+    if cfg.needs_llm() or not is_listed:
         try:
             llm_client = llm_mod.get_client(cfg.anthropic_api_key)
         except RuntimeError as exc:
@@ -434,7 +460,7 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
 
     exec_summary: Optional[str] = None
     n_analyzed = 0
-    if cfg.analyze_bodies and llm_targets:
+    if cfg.summarize_disclosures and llm_targets:
         log(f"  LLM 대상 {len(llm_targets)}건 본문 다운로드 (상위 {cfg.body_limit or '전체'}건)")
         # fill_bodies_for_important 는 is_important 만 보므로, 직접 body 채우기
         from . import disclosures as _d
@@ -455,28 +481,33 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
                 )
                 n_analyzed = sum(1 for d in discs if d.llm_status == "ok")
                 log(f"  → LLM 성공 {n_analyzed}건")
-                # Executive Summary
-                profile_summary = (
-                    f"{profile.corp_name} ({profile.corp_cls_label}), "
-                    f"CEO {profile.ceo_nm}, 결산월 {profile.acc_mt}, "
-                    f"설립 {profile.est_dt}"
-                )
-                exec_summary = llm_mod.build_executive_summary(
-                    profile_summary, discs, client=llm_client, model=model_name,
-                )
+                # Executive Summary — 독립 토글
+                if cfg.exec_summary:
+                    profile_summary = (
+                        f"{profile.corp_name} ({profile.corp_cls_label}), "
+                        f"CEO {profile.ceo_nm}, 결산월 {profile.acc_mt}, "
+                        f"설립 {profile.est_dt}"
+                    )
+                    exec_summary = llm_mod.build_executive_summary(
+                        profile_summary, discs, client=llm_client, model=model_name,
+                    )
+                else:
+                    log(f"  Executive Summary 꺼짐")
             except Exception as exc:  # noqa: BLE001
                 log(f"  ⚠ LLM 오류: {exc}")
         elif ready and llm_client is None:
             log(f"  ⚠ ANTHROPIC_API_KEY 없음 — 공시 본문 요약 건너뜀")
         elif not ready:
             log(f"  본문 다운로드 결과 비어있음 — LLM 요약 생략")
-    elif not cfg.analyze_bodies:
-        log(f"  본문 분석 꺼짐 (제목만 기록)")
+    elif not cfg.summarize_disclosures:
+        log(f"  공시 요약 꺼짐 (제목만 기록)")
+        if cfg.exec_summary:
+            log(f"  Executive Summary 도 스킵 (공시 요약이 재료)")
 
-    # 6.5) Business Profile (LLM 가능할 때만)
+    # 6.5) Business Profile (독립 토글)
     biz: Optional[dict] = None
     footnotes: Optional[dict] = None
-    if cfg.analyze_bodies and llm_client is not None:
+    if cfg.business_profile and llm_client is not None:
         log(f"[7/8] 회사 개요(Business Profile) 추출")
         try:
             biz = biz_mod.fetch_business_profile(
@@ -491,6 +522,8 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
             log(f"  ⚠ Business Profile 오류: {exc}")
             biz = None
 
+    # 6.6) Footnotes (독립 토글)
+    if cfg.footnotes and llm_client is not None:
         log(f"  주요 주석(Footnotes) 추출")
         try:
             footnotes = biz_mod.fetch_footnotes(
@@ -508,7 +541,7 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
             footnotes = None
 
     # 6.7) D&A LLM fallback — fnlttSinglAcntAll 에서 못 잡은 연도를 본문에서 추출
-    if cfg.analyze_bodies and llm_client is not None and fin.annual:
+    if cfg.da_llm_fallback and llm_client is not None and fin.annual:
         _fill_da_from_body(
             fin=fin, discs=discs, corp_code=c.corp_code,
             is_listed=is_listed, client=llm_client, model=model_name, log=log,
@@ -517,7 +550,7 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
     # 6.8) 중간 검수(validation) — 누락 D&A 가 여전히 있으면 연도별 재시도
     log(f"\n[검수] 재무 데이터 품질 점검")
     _validate_financials(fin, log)
-    if cfg.analyze_bodies and llm_client is not None and fin.annual:
+    if cfg.da_llm_fallback and llm_client is not None and fin.annual:
         still_missing = [y for y in fin.annual if y.values.get("da") is None]
         if still_missing:
             log(f"  D&A 여전히 {len(still_missing)}개년 누락 → 연도별 직접 추출 시작")
