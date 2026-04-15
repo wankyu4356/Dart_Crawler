@@ -70,24 +70,44 @@ DA_ID_TOTAL = {
     "ifrs-full_DepreciationAmortisationAndImpairmentLossReversalOfImpairmentLossRecognisedInProfitOrLoss",
     "dart_DepreciationAndAmortisation",
 }
+DA_TOTAL_ID_PREFIXES = (
+    "ifrs-full_DepreciationAndAmortisation",
+    "dart_DepreciationAndAmortisation",
+)
+
 # 유형자산 감가상각 전용 ID
 DEP_IDS = {
     "ifrs-full_DepreciationPropertyPlantAndEquipment",
     "ifrs-full_DepreciationExpense",
     "dart_DepreciationPropertyPlantAndEquipment",
 }
+DEP_ID_PREFIXES = (
+    "ifrs-full_Depreciation",     # DepreciationPropertyPlantAndEquipment 등
+    "dart_Depreciation",
+    "entity_Depreciation",
+)
+
 # 무형자산 상각 전용 ID
 AMORT_IDS = {
     "ifrs-full_AmortisationIntangibleAssetsOtherThanGoodwill",
     "ifrs-full_AmortisationExpense",
     "dart_AmortisationOfIntangibleAssets",
 }
+AMORT_ID_PREFIXES = (
+    "ifrs-full_Amortisation",
+    "ifrs-full_AmortizationOf",
+    "dart_Amortisation",
+    "dart_Amortization",
+    "entity_Amortisation",
+)
+
 # 제외 (사용권/리스 자산 상각 — 운영리스에 가까워 전통적 D&A에서 분리)
 EXCLUDE_IDS = {
     "ifrs-full_DepreciationRightOfUseAssets",
 }
+EXCLUDE_ID_KEYWORDS = ("RightOfUse", "LeasedAssets", "LeaseAssets")
 
-# [2] account_nm 패턴 매칭 (id 가 없을 때만 사용)
+# [2] account_nm 패턴 매칭 (id 가 비표준이거나 없을 때도 함께 작동)
 DEP_EXPLICIT_PATS = [
     "감가상각비에대한조정",
     "유형자산감가상각비",
@@ -95,9 +115,11 @@ DEP_EXPLICIT_PATS = [
     "유무형자산감가상각비",
     "유형자산및무형자산상각비",
     "감가상각비및무형자산상각비",
+    "감가상각비",       # 단독
+    "감가상각비용",
 ]
-DEP_GENERAL = "감가상각"   # 일반 fallback
-DEP_EXCL_WORDS = ["무형", "사용권", "리스"]   # "감가상각"과 함께 있으면 제외
+DEP_GENERAL = "감가상각"
+DEP_EXCL_WORDS = ["무형", "사용권", "리스"]
 AMORT_PATS = [
     "무형자산상각비에대한조정",
     "무형자산상각비",
@@ -105,7 +127,20 @@ AMORT_PATS = [
     "무형자산상각",
     "무형자산및영업권상각",
     "영업권및무형자산상각",
+    "무형자산및영업권의상각",
 ]
+
+
+def _id_has_any(aid: str, prefixes: tuple) -> bool:
+    return bool(aid) and any(aid.startswith(p) for p in prefixes)
+
+
+def _id_is_excluded(aid: str) -> bool:
+    if not aid:
+        return False
+    if aid in EXCLUDE_IDS:
+        return True
+    return any(kw in aid for kw in EXCLUDE_ID_KEYWORDS)
 
 
 # ── 표시 라벨 / 분류 ────────────────────────────────────────────────────
@@ -237,23 +272,32 @@ def _extract_year_values(
         if sj in ("CF", "IS", "CIS"):
             av = abs(v)
             matched_by_id = False
-            if aid in EXCLUDE_IDS:
-                continue  # 사용권자산 상각 등 D&A 에서 제외
-            if aid in DA_ID_TOTAL:
+            # id 명시 제외 (사용권자산 등)
+            if _id_is_excluded(aid):
+                if debug:
+                    print(f"  [SKIP-EXCLUDE] aid={aid} '{nm_raw}'", flush=True)
+                continue
+            # 이름 기반 사용권 제외 (id 없는 경우 대비)
+            if ("사용권" in nm or "리스자산" in nm) and ("상각" in nm or "감가" in nm):
+                if debug:
+                    print(f"  [SKIP-ROU] '{nm_raw}'", flush=True)
+                continue
+
+            # id prefix/set 매칭 (prefix 우선, set 은 fallback)
+            if _id_has_any(aid, DA_TOTAL_ID_PREFIXES) or aid in DA_ID_TOTAL:
                 da_total_candidates.append((nm_raw, av))
                 matched_by_id = True
-            elif aid in DEP_IDS:
+            elif _id_has_any(aid, DEP_ID_PREFIXES) or aid in DEP_IDS:
                 dep_id_candidates.append((nm_raw, av))
                 matched_by_id = True
-            elif aid in AMORT_IDS:
+            elif _id_has_any(aid, AMORT_ID_PREFIXES) or aid in AMORT_IDS:
                 amort_id_candidates.append((nm_raw, av))
                 matched_by_id = True
 
-            # id 매칭이 안 된 경우 (id 없거나, 있어도 내 사전에 없는 비표준 id) → name 매칭
+            # id 매칭 여부와 무관하게 name 패턴도 보조로 스캔
+            # (id set/prefix 에 없는 비표준 id 를 가진 회사 대응)
             if not matched_by_id:
-                if DEP_GENERAL in nm and any(ex in nm for ex in DEP_EXCL_WORDS):
-                    pass  # "사용권자산감가상각비" 등 제외
-                elif any(p in nm for p in DEP_EXPLICIT_PATS):
+                if any(p in nm for p in DEP_EXPLICIT_PATS):
                     dep_nm_candidates.append((nm_raw, av))
                 elif DEP_GENERAL in nm and not any(ex in nm for ex in DEP_EXCL_WORDS):
                     dep_nm_candidates.append((nm_raw, av))
@@ -318,12 +362,32 @@ def _extract_year_values(
 def _fetch_full_with_fallback(
     corp_code: str, bsns_year: str, reprt_code: str,
 ) -> tuple[List[Dict[str, Any]], str]:
-    """CFS → OFS 순으로 fnlttSinglAcntAll 호출. (rows, fs_used)."""
+    """CFS + OFS 양쪽을 모두 시도해서 한쪽에만 있는 라인(특히 D&A)까지 커버.
+    반환값 (combined_rows, fs_used). fs_used 는 CFS 를 우선 표기.
+
+    중복 방지: (sj_div, account_id, account_nm) 키로 dedup.
+    둘 다 있으면 CFS 우선.
+    """
+    by_key: Dict[tuple, Dict[str, Any]] = {}
+    fs_seen: List[str] = []
     for fs in ("CFS", "OFS"):
         rows = api.fnltt_singl_acnt_all(corp_code, bsns_year, reprt_code, fs_div=fs)
-        if rows:
-            return rows, fs
-    return [], ""
+        if not rows:
+            continue
+        fs_seen.append(fs)
+        for r in rows:
+            key = (
+                (r.get("sj_div") or "").upper(),
+                (r.get("account_id") or "").strip(),
+                (r.get("account_nm") or "").strip(),
+            )
+            # CFS 우선: 이미 키가 있으면 덮어쓰지 않음
+            if key not in by_key:
+                by_key[key] = r
+    if not by_key:
+        return [], ""
+    fs_used = fs_seen[0] if fs_seen else ""
+    return list(by_key.values()), fs_used
 
 
 def fetch_annual_financials(
