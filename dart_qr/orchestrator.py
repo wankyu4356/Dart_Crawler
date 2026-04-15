@@ -44,6 +44,7 @@ class RunConfig:
     output_dir: str = "."
     anthropic_api_key: Optional[str] = None
     anthropic_model: Optional[str] = None   # None 이면 config.ANTHROPIC_MODEL 사용
+    save_log: bool = True             # 상세 로그 파일(_log_회사_시각.txt) 저장 여부
 
 
 @dataclass
@@ -310,14 +311,17 @@ def _fill_da_from_body(
 def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     # ─── 0. 상세 로그 파일 자동 생성 (troubleshoot 용) ──────────────
     os.makedirs(cfg.output_dir, exist_ok=True)
-    _stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _safe_company = "".join(ch for ch in (cfg.company or "session")
-                            if ch not in '/\\:*?"<>|').strip()
-    _log_path = os.path.join(cfg.output_dir, f"_log_{_safe_company}_{_stamp}.txt")
-    try:
-        _log_fh = open(_log_path, "w", encoding="utf-8")
-    except Exception:
-        _log_fh = None
+    _log_fh = None
+    _log_path = None
+    if cfg.save_log:
+        _stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _safe_company = "".join(ch for ch in (cfg.company or "session")
+                                if ch not in '/\\:*?"<>|').strip()
+        _log_path = os.path.join(cfg.output_dir, f"_log_{_safe_company}_{_stamp}.txt")
+        try:
+            _log_fh = open(_log_path, "w", encoding="utf-8")
+        except Exception:
+            _log_fh = None
 
     _orig_log = log  # 원본 GUI 로거 보관
 

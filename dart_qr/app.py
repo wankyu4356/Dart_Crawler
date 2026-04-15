@@ -218,7 +218,7 @@ class App(tk.Tk):
         card2.pack(fill="x", pady=(0, 10))
 
         self.var_analyze = tk.BooleanVar(value=True)
-        ttk.Checkbutton(card2, text="본문 요약 · Implication · 회사개요 분석 (Claude 사용)",
+        ttk.Checkbutton(card2, text="주요 공시 요약 · Implication · 회사개요 생성 (Claude 사용)",
                         variable=self.var_analyze).grid(
             row=0, column=0, columnspan=3, sticky="w", padx=4, pady=4)
 
@@ -255,6 +255,13 @@ class App(tk.Tk):
             row=0, column=1, sticky="we", padx=4)
         ttk.Button(card3, text="찾아보기", style="Ghost.TButton",
                    command=self._browse).grid(row=0, column=2, padx=4)
+
+        self.var_save_log = tk.BooleanVar(value=True)
+        ttk.Checkbutton(card3,
+                        text="상세 로그 파일 저장 (_log_회사_시각.txt) — 문제 진단용",
+                        variable=self.var_save_log).grid(
+            row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 4))
+
         card3.grid_columnconfigure(1, weight=1)
 
         # ─── 3) 실행 버튼 (큰 Primary)
@@ -377,6 +384,7 @@ class App(tk.Tk):
             output_dir=self.var_outdir.get().strip() or ".",
             anthropic_api_key=self.var_key.get().strip() or None,
             anthropic_model=self.var_model.get().strip() or None,
+            save_log=bool(self.var_save_log.get()),
         )
         self._running = True
         self.btn_run.config(state="disabled", text="  분석 중…")
