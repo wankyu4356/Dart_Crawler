@@ -55,14 +55,26 @@ def find_latest_audit_reports(
     if log:
         log(f"    → 감사보고서 후보 {len(hits)}건")
 
-    # 우선순위 정렬: 연결 > 별도, 접수일 최신순
+    # ─── 연결/별도 일관성: 연결이 하나라도 있으면 연결만 사용, 없으면 별도만 ───
+    # 같은 회사가 연도마다 연결/별도를 섞어 제출한 경우 재무가 들쭉날쭉해지는
+    # 문제를 방지. 감사보고서 1건에 당기/전기/전전기 3년 비교재무가 이미
+    # 포함되므로 최신 1건만 있어도 충분하다.
+    has_consol = any("연결" in (r.get("report_nm") or "") for r in hits)
+    if has_consol:
+        hits = [r for r in hits if "연결" in (r.get("report_nm") or "")]
+        mode = "연결"
+    else:
+        hits = [r for r in hits if "연결" not in (r.get("report_nm") or "")]
+        mode = "별도"
+    if log:
+        log(f"    → '{mode}' 모드로 통일 ({len(hits)}건)")
+
+    # 접수일 최신순
     def _rank(r: Dict[str, Any]) -> tuple:
-        nm = r.get("report_nm") or ""
-        prio = 2 if "연결" in nm else 1
-        return (-prio, -int(str(r.get("rcept_dt") or "0").replace("-", "") or "0"))
+        return (-int(str(r.get("rcept_dt") or "0").replace("-", "") or "0"),)
     hits.sort(key=_rank)
 
-    # 연도별 중복 제거 (최신 1개 유지)
+    # 연도별 중복 제거 (같은 접수연도 안에 여러 건이면 최신 1개만)
     seen_years: set[str] = set()
     out: List[Dict[str, Any]] = []
     for h in hits:

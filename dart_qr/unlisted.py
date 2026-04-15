@@ -100,13 +100,14 @@ def fetch_financials(
 
     log(f"  → 표준 API 응답 부족 ({len(std.annual)}년). 감사보고서 파싱으로 보강")
     prefetched = ar.disclosures_to_rows(disclosures) if disclosures else None
+    # 가장 최신 감사보고서 1건만. 당기/전기/전전기 비교재무가 한 보고서에 모두 포함됨.
     reports = ar.find_latest_audit_reports(
-        corp_code, n=3, prefetched_rows=prefetched, log=log,
+        corp_code, n=1, prefetched_rows=prefetched, log=log,
     )
     # 수집된 범위에서 못 찾으면 6년치 재조회
     if not reports and prefetched is not None:
         log(f"    기수집 범위에 감사보고서 없음. DART 6년치 재조회")
-        reports = ar.find_latest_audit_reports(corp_code, n=3, log=log)
+        reports = ar.find_latest_audit_reports(corp_code, n=1, log=log)
     if not reports:
         log(f"  → 감사보고서 없음. 표준 결과 그대로 반환")
         return std
