@@ -293,9 +293,12 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     except Exception:
         _log_fh = None
 
+    _orig_log = log  # 원본 GUI 로거 보관
+
     def _tee_log(msg: str) -> None:
+        # 원본 로거 호출 (GUI/콘솔) — 자기 자신 아니라 _orig_log 참조해야 재귀 방지
         try:
-            log(msg)
+            _orig_log(msg)
         except Exception:
             pass
         if _log_fh:
@@ -305,7 +308,6 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
             except Exception:
                 pass
 
-    _orig_log = log
     log = _tee_log   # 이후 본문에서 log(...) 호출은 tee 로 동작
 
     if _log_fh:
