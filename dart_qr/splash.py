@@ -9,7 +9,7 @@ from typing import Optional
 
 
 class Splash:
-    def __init__(self, title: str = "DART QuickReport") -> None:
+    def __init__(self, title: str = "완규의 딸깍공장") -> None:
         try:
             import tkinter as tk
         except ImportError:
@@ -26,10 +26,10 @@ class Splash:
             pass
         self.root.configure(bg="#1a237e")
 
-        tk.Label(self.root, text="DART QuickReport",
+        tk.Label(self.root, text="완규의 딸깍공장",
                  fg="#fff", bg="#1a237e",
                  font=("Segoe UI", 14, "bold")).pack(pady=(18, 4))
-        tk.Label(self.root, text="PE Quick Due-Diligence",
+        tk.Label(self.root, text="DART 공시 자동 분석",
                  fg="#bbdefb", bg="#1a237e",
                  font=("Segoe UI", 9)).pack()
         self._var = tk.StringVar(value="시작 중…")

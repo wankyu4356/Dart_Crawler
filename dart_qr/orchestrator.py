@@ -17,6 +17,7 @@ from . import financials as fin_mod
 from . import llm as llm_mod
 from . import profile as profile_mod
 from . import shareholders as sh_mod
+from . import unlisted as unlisted_mod
 from .excel_out import write_excel
 from .html_out import write_html
 
@@ -61,14 +62,40 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     )
     log(f"[3/7] 조회기간: {bgn_de} ~ {end_de} ({period_label})")
 
+    is_listed = (profile.corp_cls or "").upper() in ("Y", "K", "N")
+
+    # 비상장은 감사보고서 파싱에 Claude 가 필요
+    llm_client = None
+    if cfg.analyze_bodies or not is_listed:
+        try:
+            llm_client = llm_mod.get_client(cfg.anthropic_api_key)
+        except RuntimeError as exc:
+            if not is_listed:
+                log(f"  ⚠ 비상장 분석에는 ANTHROPIC_API_KEY 가 필요합니다: {exc}")
+            llm_client = None
+
     # 4) 재무
-    log(f"[4/7] 재무 수집 (최근 {cfg.years_back}년 + 최신 분기)")
-    fin = fin_mod.fetch_all(c.corp_code, years_back=cfg.years_back)
+    if is_listed:
+        log(f"[4/7] 재무 수집 (최근 {cfg.years_back}년 + 최신 분기)")
+        fin = fin_mod.fetch_all(c.corp_code, years_back=cfg.years_back)
+    else:
+        log(f"[4/7] 비상장사 — 감사보고서 기반 재무 추출")
+        fin = unlisted_mod.fetch_financials(
+            c.corp_code, years_back=cfg.years_back,
+            client=llm_client, log=log,
+        )
     log(f"  → 연간 {len(fin.annual)}건, 분기 {'있음' if fin.latest_quarter else '없음'}")
 
     # 5) 주주/지배구조
-    log(f"[5/7] 주주·지배구조 수집")
-    sh = sh_mod.fetch_all(c.corp_code, bgn_de=bgn_de, end_de=end_de)
+    if is_listed:
+        log(f"[5/7] 주주·지배구조 수집")
+        sh = sh_mod.fetch_all(c.corp_code, bgn_de=bgn_de, end_de=end_de)
+    else:
+        log(f"[5/7] 비상장사 — 감사보고서 주석 기반 지배구조 추출")
+        sh = unlisted_mod.fetch_governance(
+            c.corp_code, bgn_de=bgn_de, end_de=end_de,
+            client=llm_client, log=log,
+        )
     log(f"  → 최대주주 {len(sh.major)} · 대량보유 {len(sh.major_stock)} · "
         f"임원소유 {len(sh.executive_stock)} · 임원 {len(sh.executives)}")
 
@@ -86,11 +113,10 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
             discs, limit=cfg.body_limit, log=log,
         )
         ready = [d for d in discs if d.body]
-        if ready:
+        if ready and llm_client is not None:
             try:
-                client = llm_mod.get_client(cfg.anthropic_api_key)
                 log(f"  LLM 요약·Implication 생성 (Claude, 병렬 4)")
-                llm_mod.summarize_batch(ready, client=client, log=log)
+                llm_mod.summarize_batch(ready, client=llm_client, log=log)
                 n_analyzed = sum(1 for d in discs if d.llm_status == "ok")
                 log(f"  → LLM 성공 {n_analyzed}건")
                 # Executive Summary
@@ -100,10 +126,12 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
                     f"설립 {profile.est_dt}"
                 )
                 exec_summary = llm_mod.build_executive_summary(
-                    profile_summary, discs, client=client
+                    profile_summary, discs, client=llm_client
                 )
             except RuntimeError as exc:
                 log(f"  ⚠ LLM 건너뜀: {exc}")
+        elif ready and llm_client is None:
+            log(f"  ⚠ ANTHROPIC_API_KEY 없음 — 공시 본문 요약 건너뜀")
     elif not cfg.analyze_bodies:
         log(f"  본문 분석 꺼짐 (제목만 기록)")
 

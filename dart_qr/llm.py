@@ -224,3 +224,136 @@ def build_executive_summary(
         return "\n".join(p for p in parts if p).strip()
     except Exception as exc:  # noqa: BLE001
         return f"(Executive Summary 생성 실패: {exc})"
+
+
+# ── 감사보고서 파싱 프롬프트 (비상장 지원) ────────────────────────────────
+AUDIT_FIN_SYSTEM = """당신은 한국 회계 전문가입니다. 비상장 법인의
+감사보고서 원문 텍스트를 받아 **재무제표 핵심 계정**을 순수 JSON 으로 추출합니다.
+
+엄격 규칙:
+1) 본문에 실제로 표기된 숫자만 사용. 추정 금지.
+2) 단위는 원(KRW) 기준으로 통일. 본문이 백만원/천원 단위면 환산.
+3) 연도는 감사보고서의 "제N기"에 대응하는 결산연도 (YYYY).
+4) 응답은 **JSON 배열만** (마크다운/주석 금지).
+
+JSON 스키마 (각 원소):
+{
+  "year": 2024,
+  "fs_div": "CFS" | "OFS",
+  "revenue": number | null,
+  "cost_of_sales": number | null,
+  "gross_profit": number | null,
+  "sga": number | null,
+  "op_income": number | null,
+  "dep": number | null,
+  "amort": number | null,
+  "net_income": number | null,
+  "total_assets": number | null,
+  "total_liabilities": number | null,
+  "total_equity": number | null
+}
+최대 3개년 (당기/전기/전전기). 없는 계정은 null."""
+
+
+AUDIT_GOV_SYSTEM = """당신은 한국 회계 전문가입니다. 비상장 법인의
+감사보고서 주석(Notes) 에서 **지배구조/주주/임원/배당/감사의견** 정보를
+구조화된 JSON 으로 추출합니다.
+
+엄격 규칙:
+1) 본문에 명시된 사실만. 추정·외부지식 사용 금지.
+2) 지분율은 %. 없으면 null.
+3) 응답은 **JSON 객체만** (마크다운/주석 금지).
+
+스키마:
+{
+  "major": [ {"nm":"이름","relate":"본인/특수관계인/법인 등","stock_knd":"보통주",
+              "trmend_posesn_stock_co":숫자|null,
+              "trmend_posesn_stock_qota_rt":숫자|null} ],
+  "executives": [ {"nm":"이름","ofcps":"직위","chrg_job":"담당","rgist_exctv_at":"등기여부","hffc_pd":"재직기간"} ],
+  "dividends": [ {"se":"현금배당(주당)/배당성향 등","stock_knd":"보통주",
+                  "thstrm":"당기값","frmtrm":"전기값","lwfr":"전전기값"} ],
+  "audit_opinion": [ {"bsns_year":"당기/전기","adtor":"감사인","adt_opinion":"적정/한정/부적정/의견거절","emphs_matter":"강조사항"} ],
+  "source_year": 2024
+}"""
+
+
+def _parse_json_array(text: str):
+    if not text:
+        return None
+    m = re.search(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", text)
+    candidate = m.group(1) if m else None
+    if candidate is None:
+        m2 = re.search(r"\[[\s\S]*\]", text)
+        candidate = m2.group(0) if m2 else None
+    if candidate is None:
+        return None
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+
+def extract_financials_from_audit(
+    body: str,
+    client=None,
+    model: str = ANTHROPIC_MODEL,
+    max_tokens: int = 2000,
+) -> list:
+    """감사보고서 본문 → 재무 dict 배열 (최대 3개년). 실패 시 빈 리스트."""
+    if not body:
+        return []
+    client = client or get_client()
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": AUDIT_FIN_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": f"감사보고서 본문(발췌):\n\n{body}",
+            }],
+        )
+        raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
+        parsed = _parse_json_array(raw)
+        if not isinstance(parsed, list):
+            return []
+        return parsed
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def extract_governance_from_audit(
+    body: str,
+    client=None,
+    model: str = ANTHROPIC_MODEL,
+    max_tokens: int = 2000,
+) -> dict:
+    """감사보고서 본문 → 지배구조 dict. 실패 시 빈 dict."""
+    if not body:
+        return {}
+    client = client or get_client()
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": AUDIT_GOV_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": f"감사보고서 본문(발췌):\n\n{body}",
+            }],
+        )
+        raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
+        parsed = _parse_json(raw)
+        if not isinstance(parsed, dict):
+            return {}
+        return parsed
+    except Exception:  # noqa: BLE001
+        return {}

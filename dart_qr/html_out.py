@@ -864,13 +864,13 @@ def write_html(
 <html lang="ko"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DART QuickReport — {_esc(profile.corp_name)}</title>
+<title>완규의 딸깍공장 — {_esc(profile.corp_name)}</title>
 <script src="{CHART_JS_CDN}"></script>
 <style>{CSS}</style>
 </head><body>
 <div class="wrap">
 {body}
-<footer>Generated {_esc(generated)} · DART QuickReport</footer>
+<footer>Generated {_esc(generated)} · 완규의 딸깍공장</footer>
 </div>
 <script>
 window.CHART_DATA = {json.dumps(chart_payload, ensure_ascii=False)};

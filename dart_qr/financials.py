@@ -62,16 +62,42 @@ BS_ACCOUNT_MAP: Dict[str, str] = {
     "자본총계":          "total_equity",
 }
 
-# CF 에서 D&A 추출 패턴 (dart_fill_v10 검증 패턴 차용)
+# ── CF/IS 에서 D&A 추출 ────────────────────────────────────────────────
+# [1] XBRL account_id 매칭 — 가장 신뢰성 높음
+# D&A 합계를 한 라인으로 제공하는 표준 ID (있으면 그대로 da 로 사용)
+DA_ID_TOTAL = {
+    "ifrs-full_DepreciationAndAmortisationExpense",
+    "ifrs-full_DepreciationAmortisationAndImpairmentLossReversalOfImpairmentLossRecognisedInProfitOrLoss",
+    "dart_DepreciationAndAmortisation",
+}
+# 유형자산 감가상각 전용 ID
+DEP_IDS = {
+    "ifrs-full_DepreciationPropertyPlantAndEquipment",
+    "ifrs-full_DepreciationExpense",
+    "dart_DepreciationPropertyPlantAndEquipment",
+}
+# 무형자산 상각 전용 ID
+AMORT_IDS = {
+    "ifrs-full_AmortisationIntangibleAssetsOtherThanGoodwill",
+    "ifrs-full_AmortisationExpense",
+    "dart_AmortisationOfIntangibleAssets",
+}
+# 제외 (사용권/리스 자산 상각 — 운영리스에 가까워 전통적 D&A에서 분리)
+EXCLUDE_IDS = {
+    "ifrs-full_DepreciationRightOfUseAssets",
+}
+
+# [2] account_nm 패턴 매칭 (id 가 없을 때만 사용)
 DEP_EXPLICIT_PATS = [
     "감가상각비에대한조정",
     "유형자산감가상각비",
-    "유형자산상각비",
     "유형자산의감가상각비",
     "유무형자산감가상각비",
     "유형자산및무형자산상각비",
+    "감가상각비및무형자산상각비",
 ]
-DEP_GENERAL_EXCL = ["무형", "사용권", "리스"]
+DEP_GENERAL = "감가상각"   # 일반 fallback
+DEP_EXCL_WORDS = ["무형", "사용권", "리스"]   # "감가상각"과 함께 있으면 제외
 AMORT_PATS = [
     "무형자산상각비에대한조정",
     "무형자산상각비",
@@ -154,7 +180,19 @@ def _set_first(d: Dict[str, Any], key: str, value: Any) -> None:
 def _extract_year_values(
     rows: List[Dict[str, Any]], period: str,
 ) -> Dict[str, Optional[float]]:
-    """fnlttSinglAcntAll 의 list 응답에서 한 기간(thstrm/frmtrm/bfefrmtrm) 값 추출."""
+    """fnlttSinglAcntAll 의 list 응답에서 한 기간(thstrm/frmtrm/bfefrmtrm) 값 추출.
+
+    D&A 추출 규칙:
+      1) XBRL account_id 매칭 우선
+         - DA_ID_TOTAL → 그대로 da 에 할당 (가장 신뢰)
+         - DEP_IDS / AMORT_IDS → 각각 dep / amort 에 할당 (보고서당 최대 1건)
+         - EXCLUDE_IDS 는 스킵
+      2) id 매칭 결과가 있으면 같은 카테고리의 name 패턴 탐색은 생략 (중복 방지)
+      3) name 패턴 매칭 시에는 **절댓값 최대 1건**만 채택 (합계 우선)
+    """
+    import os
+    debug = os.environ.get("DART_QR_FIN_DEBUG") == "1"
+
     field_main = {
         "thstrm":     ["thstrm_amount", "thstrm_add_amount"],
         "frmtrm":     ["frmtrm_amount", "frmtrm_add_amount"],
@@ -162,12 +200,18 @@ def _extract_year_values(
     }[period]
 
     out = _empty_values()
-    dep_total: Optional[float] = None
-    amort_total: Optional[float] = None
+
+    # D&A 후보 수집
+    da_total_candidates: List[tuple[str, float]] = []
+    dep_id_candidates:   List[tuple[str, float]] = []
+    amort_id_candidates: List[tuple[str, float]] = []
+    dep_nm_candidates:   List[tuple[str, float]] = []  # account_id 없을 때
+    amort_nm_candidates: List[tuple[str, float]] = []
 
     for row in rows:
         nm_raw = (row.get("account_nm") or "")
         nm = nm_raw.replace(" ", "").replace("\u3000", "")
+        aid = (row.get("account_id") or "").strip()
         sj = (row.get("sj_div") or "").upper()
         v: Optional[float] = None
         for f in field_main:
@@ -185,26 +229,66 @@ def _extract_year_values(
             key = BS_ACCOUNT_MAP.get(nm)
             if key:
                 _set_first(out, key, v)
-        elif sj == "CF":
-            # CF 라인은 부호가 음수/양수 혼재 — 절댓값으로 누적
-            av = abs(v)
-            if any(p in nm for p in DEP_EXPLICIT_PATS):
-                dep_total = (dep_total or 0.0) + av
-            elif "감가상각" in nm and not any(ex in nm for ex in DEP_GENERAL_EXCL):
-                if dep_total is None:
-                    dep_total = av
-            if any(p in nm for p in AMORT_PATS):
-                amort_total = (amort_total or 0.0) + av
 
-    out["dep"] = dep_total
-    out["amort"] = amort_total
+        # D&A 는 CF(간접법 조정) 또는 IS(성격별) 어디서든 나올 수 있음
+        if sj in ("CF", "IS", "CIS"):
+            av = abs(v)
+            if aid in EXCLUDE_IDS:
+                continue  # 사용권자산 상각 등은 D&A 에서 제외
+            if aid in DA_ID_TOTAL:
+                da_total_candidates.append((nm_raw, av))
+            elif aid in DEP_IDS:
+                dep_id_candidates.append((nm_raw, av))
+            elif aid in AMORT_IDS:
+                amort_id_candidates.append((nm_raw, av))
+            elif not aid or aid == "-표준계정코드 미사용-":
+                # id 없을 때만 name 패턴 매칭 (사용권/리스 제외)
+                if any(ex in nm for ex in DEP_EXCL_WORDS) and DEP_GENERAL in nm:
+                    pass  # "사용권자산감가상각비" 등 제외
+                elif any(p in nm for p in DEP_EXPLICIT_PATS):
+                    dep_nm_candidates.append((nm_raw, av))
+                elif DEP_GENERAL in nm and not any(ex in nm for ex in DEP_EXCL_WORDS):
+                    dep_nm_candidates.append((nm_raw, av))
+                if any(p in nm for p in AMORT_PATS):
+                    amort_nm_candidates.append((nm_raw, av))
+
+    # D&A 결정 (우선순위: id-total > id(dep+amort) > name(dep+amort))
+    if da_total_candidates:
+        # 여러 개면 가장 큰 값 (통상 합계 라인)
+        nm, v = max(da_total_candidates, key=lambda x: x[1])
+        out["da"] = v
+        if debug:
+            print(f"  [DA] id-total '{nm}' = {v:,.0f}", flush=True)
+    else:
+        # id 매칭 우선, 없으면 name 매칭
+        if dep_id_candidates:
+            nm, v = max(dep_id_candidates, key=lambda x: x[1])
+            out["dep"] = v
+            if debug:
+                print(f"  [DEP] id '{nm}' = {v:,.0f}", flush=True)
+        elif dep_nm_candidates:
+            nm, v = max(dep_nm_candidates, key=lambda x: x[1])
+            out["dep"] = v
+            if debug:
+                print(f"  [DEP] name '{nm}' = {v:,.0f}", flush=True)
+
+        if amort_id_candidates:
+            nm, v = max(amort_id_candidates, key=lambda x: x[1])
+            out["amort"] = v
+            if debug:
+                print(f"  [AMORT] id '{nm}' = {v:,.0f}", flush=True)
+        elif amort_nm_candidates:
+            nm, v = max(amort_nm_candidates, key=lambda x: x[1])
+            out["amort"] = v
+            if debug:
+                print(f"  [AMORT] name '{nm}' = {v:,.0f}", flush=True)
+
+        if out["dep"] is not None or out["amort"] is not None:
+            out["da"] = (out["dep"] or 0.0) + (out["amort"] or 0.0)
 
     # 파생: gross_profit
     if out["gross_profit"] is None and out["revenue"] is not None and out["cost_of_sales"] is not None:
         out["gross_profit"] = out["revenue"] - out["cost_of_sales"]
-    # 파생: D&A
-    if out["dep"] is not None or out["amort"] is not None:
-        out["da"] = (out["dep"] or 0.0) + (out["amort"] or 0.0)
     # 파생: EBITDA = OP + D&A
     if out["op_income"] is not None and out["da"] is not None:
         out["ebitda"] = out["op_income"] + out["da"]

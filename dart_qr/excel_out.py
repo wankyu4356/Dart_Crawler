@@ -59,7 +59,7 @@ def _autofit(ws, max_width: int = 50) -> None:
 # ── 섹션별 writer ────────────────────────────────────────────────────────
 def _write_profile(ws, profile: Profile, period_label: str) -> None:
     ws.title = "Profile"
-    ws["A1"] = "DART QuickReport — Company Profile"
+    ws["A1"] = "완규의 딸깍공장 — Company Profile"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A3"] = "조회기간"; ws["B3"] = period_label
     rows = [
@@ -85,6 +85,8 @@ def _write_profile(ws, profile: Profile, period_label: str) -> None:
 
 
 def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
+    from openpyxl.utils import get_column_letter
+
     ws = wb.create_sheet("재무")
     headers = ["계정"] + [f"{y.year} ({y.reprt_label})" for y in fin.annual]
     if fin.latest_quarter:
@@ -92,6 +94,18 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
         headers.append(f"{q.year} {q.reprt_label}")
     ws.append(headers)
     _style_header(ws, 1, len(headers))
+    n_cols = len(headers)
+
+    # key → 행번호 저장 (margin/YoY 수식에서 참조)
+    row_of: Dict[str, int] = {}
+
+    # 마진 키 → (분자 key, 분모 key) 매핑. 모두 * 100.
+    MARGIN_FORMULA = {
+        "gpm":     ("gross_profit", "revenue"),
+        "opm":     ("op_income",    "revenue"),
+        "ebitdam": ("ebitda",       "revenue"),
+        "npm":     ("net_income",   "revenue"),
+    }
 
     def _emit_block(title: str, keys: List[str]) -> None:
         ws.append([title])
@@ -99,47 +113,78 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
         ws.cell(row=ws.max_row, column=1).fill = SUBHEADER_FILL
         for key in keys:
             label = KEY_LABEL.get(key, key)
-            # raw 숫자 저장 (None 은 빈 셀)
             row: List[Any] = [label]
-            for y in fin.annual:
-                row.append(y.values.get(key))
-            if fin.latest_quarter:
-                row.append(fin.latest_quarter.values.get(key))
-            ws.append(row)
-            # 셀 포맷 적용 — % 키는 percentage 표기, 그 외는 원단위 콤마
-            fmt = PCT_FMT if key in PCT_KEYS else KRW_FMT
-            for c in range(2, len(headers) + 1):
-                cell = ws.cell(row=ws.max_row, column=c)
-                cell.number_format = fmt
-                cell.alignment = Alignment(horizontal="right")
+            if key in MARGIN_FORMULA:
+                # 마진은 placeholder 로 append 후 행번호 기록 → 수식 채움
+                for _ in range(n_cols - 1):
+                    row.append(None)
+                ws.append(row)
+                row_of[key] = ws.max_row
+                num_key, den_key = MARGIN_FORMULA[key]
+                num_r = row_of.get(num_key)
+                den_r = row_of.get(den_key)
+                # 분자/분모 행 번호가 기록됐을 때만 수식 주입
+                if num_r and den_r:
+                    for c in range(2, n_cols + 1):
+                        col = get_column_letter(c)
+                        cell = ws.cell(row=ws.max_row, column=c)
+                        cell.value = (
+                            f'=IFERROR({col}{num_r}/{col}{den_r}*100,"")'
+                        )
+                        cell.number_format = PCT_FMT
+                        cell.alignment = Alignment(horizontal="right")
+                else:
+                    # 분자/분모 행이 먼저 안 나왔으면 (이론상 불가) — 빈 셀
+                    for c in range(2, n_cols + 1):
+                        ws.cell(row=ws.max_row, column=c).number_format = PCT_FMT
+            else:
+                # 일반 raw 값
+                for y in fin.annual:
+                    row.append(y.values.get(key))
+                if fin.latest_quarter:
+                    row.append(fin.latest_quarter.values.get(key))
+                ws.append(row)
+                row_of[key] = ws.max_row
+                for c in range(2, n_cols + 1):
+                    cell = ws.cell(row=ws.max_row, column=c)
+                    cell.number_format = KRW_FMT
+                    cell.alignment = Alignment(horizontal="right")
 
     _emit_block("◆ Performance (손익)", PERFORMANCE_KEYS)
     ws.append([])
     _emit_block("◆ Balance Sheet", BALANCE_KEYS)
 
-    # YoY 영역 (매출/영업이익/순이익) — 셀에 raw 숫자(% 값) 저장 후 PCT_FMT
+    # YoY 영역 — 수식 기반: =(curr/prev - 1)*100
+    # annual 은 최신→과거 순. Excel 컬럼도 최신이 왼쪽(B), 과거가 오른쪽.
     if len(fin.annual) >= 2:
         ws.append([])
         ws.append(["◆ YoY 성장률 (매출/영업이익/순이익)"])
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="305496")
         ws.cell(row=ws.max_row, column=1).fill = SUBHEADER_FILL
-        for key, label in [("revenue", "매출 YoY"), ("op_income", "영업이익 YoY"),
+
+        for key, label in [("revenue", "매출 YoY"),
+                           ("op_income", "영업이익 YoY"),
                            ("net_income", "순이익 YoY")]:
-            r: List[Any] = [label]
-            for i, y in enumerate(fin.annual):
+            src_row = row_of.get(key)
+            ws.append([label] + [None] * (n_cols - 1))
+            yoy_row_idx = ws.max_row
+            if src_row is None:
+                continue
+            # 각 annual 연도 i 에 대해 i+1 (전년) 대비 수식. 마지막 열(가장 과거)은 비교 불가.
+            for i in range(len(fin.annual)):
+                col_curr = get_column_letter(2 + i)
+                col_prev = get_column_letter(2 + i + 1)
                 if i + 1 >= len(fin.annual):
-                    r.append(None)
-                    continue
-                curr = y.values.get(key)
-                prev = fin.annual[i + 1].values.get(key)
-                r.append(yoy(curr, prev))
-            if fin.latest_quarter:
-                r.append(None)
-            ws.append(r)
-            for c in range(2, len(headers) + 1):
-                cell = ws.cell(row=ws.max_row, column=c)
+                    break  # 마지막 연도는 전년 없음 → 빈 셀
+                cell = ws.cell(row=yoy_row_idx, column=2 + i)
+                cell.value = (
+                    f'=IFERROR(({col_curr}{src_row}/{col_prev}{src_row}-1)*100,"")'
+                )
                 cell.number_format = PCT_FMT
                 cell.alignment = Alignment(horizontal="right")
+            # 나머지 셀 (마지막 연도 + 분기) 포맷만
+            for c in range(2 + max(len(fin.annual) - 1, 0), n_cols + 1):
+                ws.cell(row=yoy_row_idx, column=c).number_format = PCT_FMT
 
     _autofit(ws, max_width=28)
 
