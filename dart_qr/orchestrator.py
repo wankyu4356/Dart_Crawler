@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Callable, Optional
 
+from . import business as biz_mod
 from . import corp as corp_mod
 from . import dart_api as api
 from . import disclosures as disc_mod
@@ -159,16 +160,35 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     elif not cfg.analyze_bodies:
         log(f"  본문 분석 꺼짐 (제목만 기록)")
 
+    # 6.5) Business Profile (LLM 가능할 때만)
+    biz: Optional[dict] = None
+    if cfg.analyze_bodies and llm_client is not None:
+        log(f"[7/8] 회사 개요(Business Profile) 추출")
+        try:
+            biz = biz_mod.fetch_business_profile(
+                discs=discs, corp_code=c.corp_code, is_listed=is_listed,
+                client=llm_client, model=model_name, log=log,
+            )
+            if biz:
+                n_seg = len(biz.get("segments") or [])
+                log(f"  → 요약 {len(biz.get('business_summary','') or '')}자 · "
+                    f"사업부 {n_seg}건")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ⚠ Business Profile 오류: {exc}")
+            biz = None
+
     # 7) 파일 저장
-    log(f"[7/7] 리포트 저장")
+    log(f"[8/8] 리포트 저장")
     os.makedirs(cfg.output_dir, exist_ok=True)
     safe = "".join(ch for ch in profile.corp_name if ch not in '/\\:*?"<>|').strip()
     stamp = date.today().strftime("%Y%m%d")
     base = f"DART_QuickReport_{safe}_{stamp}"
     xlsx_path = os.path.join(cfg.output_dir, base + ".xlsx")
     html_path = os.path.join(cfg.output_dir, base + ".html")
-    write_excel(xlsx_path, profile, fin, sh, discs, period_label, exec_summary)
-    write_html(html_path, profile, fin, sh, discs, period_label, exec_summary)
+    write_excel(xlsx_path, profile, fin, sh, discs, period_label,
+                exec_summary=exec_summary, business=biz)
+    write_html(html_path, profile, fin, sh, discs, period_label,
+               exec_summary=exec_summary, business=biz)
     log(f"  ✓ Excel:  {xlsx_path}")
     log(f"  ✓ HTML:  {html_path}")
 

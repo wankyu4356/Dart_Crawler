@@ -330,6 +330,64 @@ def extract_financials_from_audit(
         return []
 
 
+# ── 사업 개요 (Business Overview) 추출 ─────────────────────────────────
+BUSINESS_SYSTEM = """당신은 PE 투자심사역입니다. 한국 기업의 사업보고서 또는
+감사보고서 원문에서 투자 판단에 필요한 **회사 개요**를 구조화 JSON 으로
+추출합니다.
+
+엄격 규칙:
+1) 본문에 명시된 사실만 사용. 외부지식/추정 금지.
+2) 금액은 원 단위로 통일하되, 본문 표기가 "억원" 등으로 다르면 revenue_note
+   에 단위/기준연도를 명기.
+3) 비율은 %.
+4) 응답은 **JSON 객체만** (마크다운/주석 금지).
+
+스키마:
+{
+  "business_summary": "3~5줄, 이 회사가 무엇을 하는지 + 핵심 BM",
+  "products": ["제품/서비스 1", ...],
+  "segments": [
+    {"name":"사업부/제품군","revenue":숫자|null,"revenue_note":"단위/연도 설명",
+     "op_margin_pct":숫자|null,"description":"한 줄 설명"}
+  ],
+  "major_customers": ["고객사 1", ...],
+  "major_suppliers": ["공급사 1", ...],
+  "key_insights": ["투자 관점 2~4개 (성장 드라이버/리스크/경쟁 위치)"]
+}"""
+
+
+def extract_business_overview(
+    body: str,
+    client=None,
+    model: str = ANTHROPIC_MODEL,
+    max_tokens: int = 2500,
+) -> dict:
+    """사업보고서 `II. 사업의 내용` 섹션 혹은 감사보고서 본문에서 비즈니스 정보
+    JSON dict 추출. 실패 시 빈 dict."""
+    if not body:
+        return {}
+    client = client or get_client()
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": BUSINESS_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": f"사업 섹션 원문(발췌):\n\n{body}",
+            }],
+        )
+        raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
+        parsed = _parse_json(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def extract_governance_from_audit(
     body: str,
     client=None,

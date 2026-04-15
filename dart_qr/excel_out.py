@@ -13,6 +13,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from .config import CONTACT_EMAIL, CONTACT_NAME
 from .disclosures import Disclosure
 from .financials import (
     BALANCE_KEYS, FinancialsBundle, KEY_LABEL, PCT_KEYS, PERFORMANCE_KEYS,
@@ -31,7 +32,8 @@ WRAP = Alignment(wrap_text=True, vertical="top")
 
 # 셀 표시 포맷 — 값은 raw 숫자(원 단위)로 저장하고 표시만 포맷
 KRW_FMT = '#,##0'           # 1,234,567,890
-PCT_FMT = '0.0"%";\\-0.0"%";"-"'  # 12.3% / -12.3% / -
+# 12.3% (기본) / -12.3% (빨강) / -
+PCT_FMT = '0.0"%";[Red]\\-0.0"%";"-"'
 
 
 def _style_header(ws, row: int, ncols: int) -> None:
@@ -83,6 +85,16 @@ def _write_profile(ws, profile: Profile, period_label: str) -> None:
     for i, (k, v) in enumerate(rows, start=5):
         ws.cell(row=i, column=1, value=k).font = Font(bold=True)
         ws.cell(row=i, column=2, value=v)
+
+    # 문의 메모
+    last_row = 5 + len(rows) + 2
+    cell = ws.cell(row=last_row, column=1,
+                   value=f"문의·제안: {CONTACT_EMAIL}")
+    cell.font = Font(italic=True, color="607D8B")
+    cell = ws.cell(row=last_row + 1, column=1,
+                   value=f"생성기: {CONTACT_NAME}")
+    cell.font = Font(italic=True, color="B0BEC5", size=9)
+
     _autofit(ws)
 
 
@@ -271,6 +283,92 @@ def _write_important_details(wb: Workbook, discs: List[Disclosure]) -> None:
     _autofit(ws, max_width=60)
 
 
+def _write_business(wb: Workbook, biz: Optional[dict]) -> None:
+    if not biz:
+        return
+    ws = wb.create_sheet("사업개요", 1)
+    ws["A1"] = "회사 개요 (Business Profile)"
+    ws["A1"].font = Font(bold=True, size=14)
+    src = biz.get("_source_report_nm") or ""
+    if src:
+        ws["A2"] = f"기준 보고서: {src}"
+        ws["A2"].font = Font(italic=True, color="607D8B")
+
+    r = 4
+    summary = (biz.get("business_summary") or "").strip()
+    if summary:
+        ws.cell(row=r, column=1, value="요약").font = Font(bold=True, color="305496")
+        r += 1
+        c = ws.cell(row=r, column=1, value=summary)
+        c.alignment = WRAP
+        ws.row_dimensions[r].height = max(40, min(200, 18 * (len(summary) // 50 + 1)))
+        r += 2
+
+    products = biz.get("products") or []
+    if products:
+        ws.cell(row=r, column=1, value="주요 제품/서비스").font = Font(bold=True, color="305496")
+        r += 1
+        for p in products[:30]:
+            ws.cell(row=r, column=1, value=f"• {p}")
+            r += 1
+        r += 1
+
+    segments = biz.get("segments") or []
+    if segments:
+        ws.cell(row=r, column=1, value="사업부별 매출·영업이익률").font = Font(bold=True, color="305496")
+        r += 1
+        headers = ["사업부/제품군", "매출", "매출 단위/연도", "영업이익률(%)", "설명"]
+        for i, h in enumerate(headers, start=1):
+            cell = ws.cell(row=r, column=i, value=h)
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+        r += 1
+        for s in segments[:30]:
+            ws.cell(row=r, column=1, value=s.get("name", ""))
+            rev = s.get("revenue")
+            ws.cell(row=r, column=2, value=rev if isinstance(rev, (int, float)) else None)
+            ws.cell(row=r, column=2).number_format = KRW_FMT
+            ws.cell(row=r, column=3, value=s.get("revenue_note", ""))
+            opm = s.get("op_margin_pct")
+            ws.cell(row=r, column=4, value=opm if isinstance(opm, (int, float)) else None)
+            ws.cell(row=r, column=4).number_format = PCT_FMT
+            ws.cell(row=r, column=5, value=s.get("description", "")).alignment = WRAP
+            r += 1
+        r += 1
+
+    customers = biz.get("major_customers") or []
+    suppliers = biz.get("major_suppliers") or []
+    if customers or suppliers:
+        ws.cell(row=r, column=1, value="주요 매출처").font = Font(bold=True, color="305496")
+        ws.cell(row=r, column=3, value="주요 매입처").font = Font(bold=True, color="305496")
+        r += 1
+        max_n = max(len(customers), len(suppliers))
+        for i in range(min(20, max_n)):
+            if i < len(customers):
+                ws.cell(row=r, column=1, value=f"• {customers[i]}")
+            if i < len(suppliers):
+                ws.cell(row=r, column=3, value=f"• {suppliers[i]}")
+            r += 1
+        r += 1
+
+    insights = biz.get("key_insights") or []
+    if insights:
+        ws.cell(row=r, column=1, value="투자 포인트").font = Font(bold=True, color="305496")
+        r += 1
+        for x in insights:
+            cell = ws.cell(row=r, column=1, value=f"▶ {x}")
+            cell.alignment = WRAP
+            cell.fill = PatternFill("solid", fgColor="FFF8EF")
+            r += 1
+
+    # 열 너비
+    ws.column_dimensions["A"].width = 40
+    ws.column_dimensions["B"].width = 22
+    ws.column_dimensions["C"].width = 28
+    ws.column_dimensions["D"].width = 16
+    ws.column_dimensions["E"].width = 50
+
+
 # ── 최종 엔트리 ──────────────────────────────────────────────────────────
 def write_excel(
     path: str,
@@ -280,6 +378,7 @@ def write_excel(
     disclosures: List[Disclosure],
     period_label: str,
     exec_summary: Optional[str] = None,
+    business: Optional[dict] = None,
 ) -> None:
     wb = Workbook()
     _write_profile(wb.active, profile, period_label)
@@ -292,6 +391,7 @@ def write_excel(
         es["A3"].alignment = WRAP
         es.column_dimensions["A"].width = 100
 
+    _write_business(wb, business)
     _write_financials(wb, fin)
     _write_indicators(wb, fin)
     _write_shareholders(wb, shareholders)

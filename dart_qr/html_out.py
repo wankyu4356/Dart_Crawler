@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from . import chart_data as cd
+from .config import CONTACT_EMAIL, CONTACT_NAME
 from .disclosures import Disclosure
 from .financials import (
     BALANCE_KEYS, FinancialsBundle, KEY_LABEL, PCT_KEYS, PERFORMANCE_KEYS,
@@ -240,6 +241,32 @@ section.card h2 .hint{
 section.card h3{margin-top:18px; margin-bottom:8px; font-size:14px; color:var(--ink-2);}
 .muted{color:var(--muted);} .small{font-size:12px;}
 
+/* Business Profile */
+.biz .biz-summary{
+  background:#f3f6ff; border-left:4px solid var(--primary);
+  padding:12px 16px; border-radius:8px; font-size:14.5px;
+  line-height:1.6;
+}
+.chips{display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 10px;}
+.chip{
+  display:inline-block; background:#eef2fb; color:var(--primary);
+  padding:4px 10px; border-radius:999px; font-size:12px; font-weight:500;
+}
+table.seg td, table.seg th{font-size:13px;}
+table.seg td:nth-child(2), table.seg td:nth-child(3){
+  text-align:right; font-variant-numeric:tabular-nums;
+}
+.two-col{
+  display:grid; grid-template-columns:1fr 1fr; gap:18px;
+  margin:10px 0;
+}
+@media (max-width:720px){ .two-col{grid-template-columns:1fr;} }
+ul.insights{margin:4px 0 0 18px; padding:0;}
+ul.insights li{
+  margin:4px 0; padding:4px 8px; background:#fff8ef;
+  border-left:3px solid var(--accent); border-radius:4px;
+}
+
 /* Exec body */
 .exec{font-size:14.5px;}
 .exec h2{border:none; font-size:16px; margin-top:14px; padding:0;}
@@ -274,6 +301,12 @@ table.fin tr.ratio td, table.fin tr.ratio th{
   font-style: italic;
   background: #f7f9fc;
   color: var(--primary);
+}
+/* 음수 비율은 빨강 강조 (ratio 보다 우선) */
+table.fin tr.ratio td.neg{
+  color: var(--neg) !important;
+  background: #fff0f3 !important;
+  font-weight: 600;
 }
 table.fin .pos{color:var(--pos);} table.fin .neg{color:var(--neg);}
 
@@ -364,6 +397,9 @@ footer{
   text-align:center; color:var(--muted);
   font-size:12px; margin-top:30px;
 }
+footer .contact{margin-top:4px;}
+footer .contact a{color:var(--primary); text-decoration:none; font-weight:600;}
+footer .contact a:hover{text-decoration:underline;}
 
 @media print{
   body{background:#fff;}
@@ -421,6 +457,106 @@ def _kpi_row(fin: FinancialsBundle) -> str:
     return f'<div class="kpis">{"".join(html_cards)}</div>'
 
 
+def _business_section(cnt: SectionCounter, biz: Optional[dict]) -> str:
+    """Business Profile 섹션: 요약/제품/사업부/매출처·매입처/투자포인트."""
+    if not biz:
+        return ""
+    summary = (biz.get("business_summary") or "").strip()
+    products = biz.get("products") or []
+    segments = biz.get("segments") or []
+    customers = biz.get("major_customers") or []
+    suppliers = biz.get("major_suppliers") or []
+    insights = biz.get("key_insights") or []
+    source_nm = biz.get("_source_report_nm") or ""
+
+    if not any([summary, products, segments, customers, suppliers, insights]):
+        return ""
+
+    n = cnt.next()
+    hint = f'<span class="hint">기준: {_esc(source_nm)}</span>' if source_nm else ""
+
+    # 주요 제품/서비스 — chip grid
+    chips_html = ""
+    if products:
+        chips = "".join(f'<span class="chip">{_esc(p)}</span>' for p in products[:20])
+        chips_html = f'<h3>주요 제품/서비스</h3><div class="chips">{chips}</div>'
+
+    # 사업부별 매출·영업이익률 — 표
+    seg_html = ""
+    if segments:
+        def _fmt_rev(v, note):
+            if v is None:
+                return _esc(note or "-")
+            # 원 단위로 들어온 금액을 조/억으로 포맷
+            absv = abs(v)
+            if absv >= 1e12:
+                return f"{v/1e12:,.2f}조"
+            if absv >= 1e8:
+                return f"{v/1e8:,.0f}억"
+            if absv >= 1e4:
+                return f"{v/1e4:,.0f}만"
+            return f"{v:,.0f}"
+
+        rows = []
+        for s in segments[:20]:
+            name = _esc(s.get("name", "-"))
+            rev = _fmt_rev(s.get("revenue"), s.get("revenue_note"))
+            opm = s.get("op_margin_pct")
+            opm_str = f"{opm:.1f}%" if isinstance(opm, (int, float)) else "-"
+            desc = _esc(s.get("description", ""))
+            rows.append(
+                f"<tr><th>{name}</th><td>{_esc(rev)}</td>"
+                f"<td>{opm_str}</td><td>{desc}</td></tr>"
+            )
+        seg_html = (
+            "<h3>사업부별 매출·영업이익률</h3>"
+            "<table class='seg'><thead>"
+            "<tr><th>사업부/제품군</th><th>매출</th>"
+            "<th>영업이익률</th><th>설명</th></tr>"
+            "</thead><tbody>" + "".join(rows) + "</tbody></table>"
+        )
+
+    # 매출처 / 매입처 2컬럼
+    cs_html = ""
+    if customers or suppliers:
+        def _ul(items):
+            if not items:
+                return "<p class='muted'>(정보 없음)</p>"
+            return "<ul>" + "".join(f"<li>{_esc(x)}</li>" for x in items[:15]) + "</ul>"
+        cs_html = f"""
+  <div class="two-col">
+    <div>
+      <h3>주요 매출처 (고객)</h3>
+      {_ul(customers)}
+    </div>
+    <div>
+      <h3>주요 매입처 (공급)</h3>
+      {_ul(suppliers)}
+    </div>
+  </div>"""
+
+    # 투자 포인트
+    ins_html = ""
+    if insights:
+        lis = "".join(f"<li>{_esc(x)}</li>" for x in insights)
+        ins_html = f'<h3>투자 포인트</h3><ul class="insights">{lis}</ul>'
+
+    sum_html = (
+        f'<p class="biz-summary">{_esc(summary)}</p>' if summary else ""
+    )
+
+    return f"""
+<section class="card biz">
+  <h2><span class="secnum">{n}</span> 회사 개요 {hint}</h2>
+  {sum_html}
+  {chips_html}
+  {seg_html}
+  {cs_html}
+  {ins_html}
+</section>
+"""
+
+
 def _exec_section(cnt: SectionCounter, exec_summary: Optional[str]) -> str:
     if not exec_summary or not exec_summary.strip():
         return ""
@@ -442,13 +578,21 @@ def _fin_table(fin: FinancialsBundle) -> str:
         cols.append(f"{q.year} {q.reprt_label}")
     head = "".join(f"<th>{_esc(c)}</th>" for c in cols)
 
+    def _cell_for(key: str, v):
+        """값 하나를 <td> 로 렌더. 비율 음수는 빨간색 class."""
+        txt = _esc(format_value(key, v))
+        cls = ""
+        if key in PCT_KEYS and isinstance(v, (int, float)) and v < 0:
+            cls = ' class="neg"'
+        return f"<td{cls}>{txt}</td>"
+
     def _row_for(key: str) -> str:
         label = KEY_LABEL.get(key, key)
         cells = []
         for y in fin.annual:
-            cells.append(f"<td>{_esc(format_value(key, y.values.get(key)))}</td>")
+            cells.append(_cell_for(key, y.values.get(key)))
         if fin.latest_quarter:
-            cells.append(f"<td>{_esc(format_value(key, fin.latest_quarter.values.get(key)))}</td>")
+            cells.append(_cell_for(key, fin.latest_quarter.values.get(key)))
         # 비율 행은 이탤릭 + 옅은 음영
         tr_cls = ' class="ratio"' if key in PCT_KEYS else ""
         return f"<tr{tr_cls}><th>{_esc(label)}</th>{''.join(cells)}</tr>"
@@ -496,7 +640,10 @@ def _fin_table(fin: FinancialsBundle) -> str:
 """
 
 
-def _financials_section(cnt: SectionCounter, fin: FinancialsBundle) -> str:
+def _financials_section(
+    cnt: SectionCounter, fin: FinancialsBundle,
+    chart_payload: Optional[Dict[str, Any]] = None,
+) -> str:
     n = cnt.next()
     if not fin.annual and not fin.latest_quarter:
         return f'<section class="card"><h2><span class="secnum">{n}</span> 재무 하이라이트</h2>' \
@@ -504,13 +651,19 @@ def _financials_section(cnt: SectionCounter, fin: FinancialsBundle) -> str:
     fs_hint = ""
     if fin.annual and fin.annual[0].fs_div:
         fs_hint = f'<span class="hint">기준: {fin.annual[0].fs_div} (연결 우선)</span>'
+
+    # 동적 단위: chart_payload 에서 꺼내오거나 기본값
+    cp = chart_payload or {}
+    perf_unit = (cp.get("performance") or {}).get("unit", "억원")
+    bs_unit   = (cp.get("bs")          or {}).get("unit", "조원")
+
     return f"""
 <section class="card">
   <h2><span class="secnum">{n}</span> 재무 하이라이트{fs_hint}</h2>
 
   <div class="chart-grid">
     <div class="chart-box wide">
-      <h4>손익 추이 <span class="unit">단위: 억원</span></h4>
+      <h4>손익 추이 <span class="unit">단위: {_esc(perf_unit)}</span></h4>
       <canvas id="chart-performance"></canvas>
     </div>
     <div class="chart-box">
@@ -518,7 +671,7 @@ def _financials_section(cnt: SectionCounter, fin: FinancialsBundle) -> str:
       <canvas id="chart-margin"></canvas>
     </div>
     <div class="chart-box">
-      <h4>재무상태 (자산 = 부채 + 자본) <span class="unit">단위: 조원</span></h4>
+      <h4>재무상태 (자산 = 자본 + 부채) <span class="unit">단위: {_esc(bs_unit)}</span></h4>
       <canvas id="chart-bs"></canvas>
     </div>
   </div>
@@ -712,16 +865,20 @@ CHART_INIT_JS = r"""
     return v.toFixed(1) + '%';
   }
 
-  // ── 1. 손익 bar
+  // ── 1. 손익 bar (동적 단위)
   var p = CD.performance;
   if (p && document.getElementById('chart-performance')) {
+    var pUnit = p.unit || '억원';
     new Chart(document.getElementById('chart-performance'), {
       type: 'bar',
       data: { labels: p.labels, datasets: p.datasets },
       options: Object.assign({}, COMMON, {
         scales: {
           y: {
-            ticks: { callback: function(v){ return fmtKRW(v); }, font:{size:11} },
+            ticks: {
+              callback: function(v){ return v.toLocaleString('ko-KR') + pUnit; },
+              font:{size:11}
+            },
             grid: { color: '#eceff4' }
           },
           x: { grid: { display: false }, ticks: {font:{size:11}} }
@@ -730,7 +887,9 @@ CHART_INIT_JS = r"""
           tooltip: Object.assign({}, COMMON.plugins.tooltip, {
             callbacks: {
               label: function(ctx){
-                return ctx.dataset.label + ': ' + fmtKRW(ctx.parsed.y);
+                var v = ctx.parsed.y;
+                return ctx.dataset.label + ': ' + (v == null ? '-'
+                  : v.toLocaleString('ko-KR', {maximumFractionDigits:2}) + pUnit);
               }
             }
           })
@@ -738,6 +897,32 @@ CHART_INIT_JS = r"""
       })
     });
   }
+
+  // 0% 미만 영역을 연한 분홍으로 음영 (마진 차트 전용)
+  var negativeZoneBg = {
+    id: 'negativeZoneBg',
+    beforeDatasetsDraw: function(chart) {
+      var area = chart.chartArea;
+      var yScale = chart.scales.y;
+      if (!area || !yScale) return;
+      var y0 = yScale.getPixelForValue(0);
+      if (y0 >= area.bottom) return;  // 전 구간 음수면 전체 음영
+      var ctx = chart.ctx;
+      ctx.save();
+      ctx.fillStyle = 'rgba(244, 143, 177, 0.18)';  // 연한 분홍
+      var top = Math.max(y0, area.top);
+      ctx.fillRect(area.left, top, area.right - area.left, area.bottom - top);
+      // 0% 라인 점선
+      ctx.strokeStyle = 'rgba(198, 40, 40, 0.35)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(area.left, y0);
+      ctx.lineTo(area.right, y0);
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
 
   // ── 2. 마진 line
   var m = CD.margin;
@@ -752,6 +937,7 @@ CHART_INIT_JS = r"""
     new Chart(document.getElementById('chart-margin'), {
       type: 'line',
       data: { labels: m.labels, datasets: m.datasets },
+      plugins: [negativeZoneBg],
       options: Object.assign({}, COMMON, {
         scales: {
           y: {
@@ -773,9 +959,10 @@ CHART_INIT_JS = r"""
     });
   }
 
-  // ── 3. BS stacked
+  // ── 3. BS stacked (동적 단위)
   var b = CD.bs;
   if (b && document.getElementById('chart-bs')) {
+    var bUnit = b.unit || '조원';
     new Chart(document.getElementById('chart-bs'), {
       type: 'bar',
       data: { labels: b.labels, datasets: b.datasets },
@@ -783,7 +970,7 @@ CHART_INIT_JS = r"""
         scales: {
           y: {
             stacked: true,
-            ticks: { callback: function(v){ return v + '조'; }, font:{size:11} },
+            ticks: { callback: function(v){ return v.toLocaleString('ko-KR') + bUnit; }, font:{size:11} },
             grid: { color: '#eceff4' }
           },
           x: { stacked: true, grid: { display: false }, ticks: {font:{size:11}} }
@@ -792,11 +979,11 @@ CHART_INIT_JS = r"""
           tooltip: Object.assign({}, COMMON.plugins.tooltip, {
             callbacks: {
               label: function(ctx){
-                return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(1) + '조원';
+                return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + bUnit;
               },
               footer: function(items){
                 var sum = items.reduce(function(s, i){ return s + i.parsed.y; }, 0);
-                return '자산총계 ≈ ' + sum.toFixed(1) + '조원';
+                return '자산총계 ≈ ' + sum.toFixed(2) + bUnit;
               }
             }
           })
@@ -838,6 +1025,7 @@ def write_html(
     disclosures: List[Disclosure],
     period_label: str,
     exec_summary: Optional[str] = None,
+    business: Optional[dict] = None,
 ) -> None:
     cnt = SectionCounter()
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -853,8 +1041,9 @@ def write_html(
     body = (
         _header(profile, period_label)
         + _kpi_row(fin)
+        + _business_section(cnt, business)
         + _exec_section(cnt, exec_summary)
-        + _financials_section(cnt, fin)
+        + _financials_section(cnt, fin, chart_payload)
         + _governance_section(cnt, shareholders)
         + _timeline_section(cnt, disclosures)
         + _key_issues_section(cnt, disclosures)
@@ -870,7 +1059,12 @@ def write_html(
 </head><body>
 <div class="wrap">
 {body}
-<footer>Generated {_esc(generated)} · 완규의 딸깍공장</footer>
+<footer>
+  <div>Generated {_esc(generated)} · {_esc(CONTACT_NAME)}</div>
+  <div class="contact">문의/개선 제안:
+    <a href="mailto:{CONTACT_EMAIL}">{CONTACT_EMAIL}</a>
+  </div>
+</footer>
 </div>
 <script>
 window.CHART_DATA = {json.dumps(chart_payload, ensure_ascii=False)};

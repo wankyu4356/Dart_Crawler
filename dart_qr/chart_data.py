@@ -34,7 +34,7 @@ def _annual_then_quarter(fin: FinancialsBundle) -> List[YearFin]:
 
 
 def build_performance_chart(fin: FinancialsBundle) -> Dict[str, Any]:
-    """매출/영업이익/EBITDA/당기순이익 grouped bar (억원 단위)."""
+    """매출/영업이익/EBITDA/당기순이익 grouped bar. 값 규모에 따라 단위 자동."""
     periods = _annual_then_quarter(fin)
     labels = []
     for y in periods:
@@ -43,9 +43,16 @@ def build_performance_chart(fin: FinancialsBundle) -> Dict[str, Any]:
         else:
             labels.append(f"{y.year} {y.reprt_label}")
 
+    # 단위 자동 (매출 기준)
+    all_vals: List[Optional[float]] = []
+    for y in periods:
+        for k in ("revenue", "op_income", "ebitda", "net_income"):
+            all_vals.append(y.values.get(k))
+    divisor, unit = _pick_scale(all_vals)
+
     def series(key: str) -> List[Optional[float]]:
         return [
-            (y.values.get(key) / 1e8) if y.values.get(key) is not None else None
+            (y.values.get(key) / divisor) if y.values.get(key) is not None else None
             for y in periods
         ]
 
@@ -57,7 +64,7 @@ def build_performance_chart(fin: FinancialsBundle) -> Dict[str, Any]:
             {"label": "EBITDA",   "data": series("ebitda"),     "backgroundColor": "#5c6bc0"},
             {"label": "당기순이익", "data": series("net_income"), "backgroundColor": "#7e57c2"},
         ],
-        "unit": "억원",
+        "unit": unit,
     }
 
 
@@ -86,8 +93,25 @@ def build_margin_chart(fin: FinancialsBundle) -> Dict[str, Any]:
     }
 
 
+_SCALE_LEVELS = [
+    (10e12, 1e12, "조원"),   # 10조 이상이면 조원
+    (1e8,   1e8,  "억원"),   # 1억 이상이면 억원
+    (1,     1,    "원"),      # 그 외 원 단위
+]
+
+
+def _pick_scale(values: List[Optional[float]]):
+    """값 범위에 맞춰 (divisor, unit) 자동 선택."""
+    nonzero = [abs(v) for v in values if isinstance(v, (int, float))]
+    m = max(nonzero) if nonzero else 0
+    for threshold, divisor, unit in _SCALE_LEVELS:
+        if m >= threshold:
+            return divisor, unit
+    return 1, "원"
+
+
 def build_bs_chart(fin: FinancialsBundle) -> Dict[str, Any]:
-    """BS stacked bar: 부채 + 자본 = 자산 (조원 단위)."""
+    """BS stacked bar: 자본 + 부채 = 자산. 값 규모에 따라 단위 자동 선택."""
     periods = _annual_then_quarter(fin)
     labels = []
     for y in periods:
@@ -96,20 +120,27 @@ def build_bs_chart(fin: FinancialsBundle) -> Dict[str, Any]:
         else:
             labels.append(f"{y.year} {y.reprt_label}")
 
+    # 단위 자동 선택 (부채+자본 합산 기준)
+    all_vals: List[Optional[float]] = []
+    for y in periods:
+        for k in ("total_equity", "total_liabilities"):
+            all_vals.append(y.values.get(k))
+    divisor, unit = _pick_scale(all_vals)
+
     def series(key: str) -> List[Optional[float]]:
         return [
-            (y.values.get(key) / 1e12) if y.values.get(key) is not None else None
+            (y.values.get(key) / divisor) if y.values.get(key) is not None else None
             for y in periods
         ]
 
     return {
         "labels": labels,
-        # stacked 순서: 자본이 아래(베이스), 부채가 위 (재무상태 관습)
+        # stacked 순서: 자본이 아래(베이스), 부채가 위
         "datasets": [
             {"label": "자본", "data": series("total_equity"),       "backgroundColor": "#26a69a"},
             {"label": "부채", "data": series("total_liabilities"), "backgroundColor": "#ef5350"},
         ],
-        "unit": "조원",
+        "unit": unit,
     }
 
 
