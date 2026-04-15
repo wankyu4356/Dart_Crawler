@@ -35,6 +35,7 @@ class RunConfig:
     years_back: int = 4               # 연간 재무 조회 연수
     output_dir: str = "."
     anthropic_api_key: Optional[str] = None
+    anthropic_model: Optional[str] = None   # None 이면 config.ANTHROPIC_MODEL 사용
 
 
 @dataclass
@@ -74,49 +75,70 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
                 log(f"  ⚠ 비상장 분석에는 ANTHROPIC_API_KEY 가 필요합니다: {exc}")
             llm_client = None
 
-    # 4) 재무
-    if is_listed:
-        log(f"[4/7] 재무 수집 (최근 {cfg.years_back}년 + 최신 분기)")
-        fin = fin_mod.fetch_all(c.corp_code, years_back=cfg.years_back)
-    else:
-        log(f"[4/7] 비상장사 — 감사보고서 기반 재무 추출")
-        fin = unlisted_mod.fetch_financials(
-            c.corp_code, years_back=cfg.years_back,
-            client=llm_client, log=log,
-        )
-    log(f"  → 연간 {len(fin.annual)}건, 분기 {'있음' if fin.latest_quarter else '없음'}")
-
-    # 5) 주주/지배구조
-    if is_listed:
-        log(f"[5/7] 주주·지배구조 수집")
-        sh = sh_mod.fetch_all(c.corp_code, bgn_de=bgn_de, end_de=end_de)
-    else:
-        log(f"[5/7] 비상장사 — 감사보고서 주석 기반 지배구조 추출")
-        sh = unlisted_mod.fetch_governance(
-            c.corp_code, bgn_de=bgn_de, end_de=end_de,
-            client=llm_client, log=log,
-        )
-    log(f"  → 최대주주 {len(sh.major)} · 대량보유 {len(sh.major_stock)} · "
-        f"임원소유 {len(sh.executive_stock)} · 임원 {len(sh.executives)}")
-
-    # 6) 공시
-    log(f"[6/7] 공시 목록 조회")
+    # 4) 공시 목록 먼저 조회 — 비상장 경로의 감사보고서 찾기에 재활용
+    log(f"[4/7] 공시 목록 조회")
     discs = disc_mod.fetch_list(c.corp_code, bgn_de, end_de)
     important = [d for d in discs if d.is_important]
     log(f"  → 전체 {len(discs)}건, 중요(A/B/D) {len(important)}건")
 
+    # 5) 재무
+    if is_listed:
+        log(f"[5/7] 재무 수집 (최근 {cfg.years_back}년 + 최신 분기)")
+        fin = fin_mod.fetch_all(c.corp_code, years_back=cfg.years_back)
+    else:
+        log(f"[5/7] 비상장사 — 감사보고서 기반 재무 추출")
+        fin = unlisted_mod.fetch_financials(
+            c.corp_code, years_back=cfg.years_back,
+            client=llm_client, log=log, disclosures=discs,
+        )
+    log(f"  → 연간 {len(fin.annual)}건, 분기 {'있음' if fin.latest_quarter else '없음'}")
+
+    # 6) 주주/지배구조
+    if is_listed:
+        log(f"[6/7] 주주·지배구조 수집")
+        sh = sh_mod.fetch_all(c.corp_code, bgn_de=bgn_de, end_de=end_de)
+    else:
+        log(f"[6/7] 비상장사 — 감사보고서 주석 기반 지배구조 추출")
+        sh = unlisted_mod.fetch_governance(
+            c.corp_code, bgn_de=bgn_de, end_de=end_de,
+            client=llm_client, log=log, disclosures=discs,
+        )
+    log(f"  → 최대주주 {len(sh.major)} · 대량보유 {len(sh.major_stock)} · "
+        f"임원소유 {len(sh.executive_stock)} · 임원 {len(sh.executives)}")
+
+    # 비상장이면 감사보고서도 LLM 요약 대상에 포함 (is_important 외)
+    llm_targets = list(important)
+    if not is_listed:
+        for d in discs:
+            if d in llm_targets:
+                continue
+            if "감사보고서" in (d.report_nm or ""):
+                llm_targets.append(d)
+
+    # 사용할 Claude 모델
+    model_name = cfg.anthropic_model or __import__("dart_qr.config", fromlist=["ANTHROPIC_MODEL"]).ANTHROPIC_MODEL
+
     exec_summary: Optional[str] = None
     n_analyzed = 0
-    if cfg.analyze_bodies and important:
-        log(f"  본문 다운로드 (상위 {cfg.body_limit or '전체'}건)")
-        disc_mod.fill_bodies_for_important(
-            discs, limit=cfg.body_limit, log=log,
-        )
-        ready = [d for d in discs if d.body]
+    if cfg.analyze_bodies and llm_targets:
+        log(f"  LLM 대상 {len(llm_targets)}건 본문 다운로드 (상위 {cfg.body_limit or '전체'}건)")
+        # fill_bodies_for_important 는 is_important 만 보므로, 직접 body 채우기
+        from . import disclosures as _d
+        cap_per_target = 30000 if is_listed else 60000  # 비상장 감사보고서는 더 크게
+        limited = llm_targets[: cfg.body_limit] if cfg.body_limit else llm_targets
+        for i, d in enumerate(limited, 1):
+            if d.body:
+                continue
+            log(f"    [{i}/{len(limited)}] {d.rcept_dt} {d.report_nm[:40]}")
+            d.body = _d.fetch_body(d.rcept_no, cap=cap_per_target)
+
+        ready = [d for d in limited if d.body]
         if ready and llm_client is not None:
             try:
-                log(f"  LLM 요약·Implication 생성 (Claude, 병렬 4)")
-                llm_mod.summarize_batch(ready, client=llm_client, log=log)
+                log(f"  LLM 요약·Implication 생성 ({model_name}, 병렬 4)")
+                llm_mod.summarize_batch(
+                    ready, client=llm_client, log=log, model=model_name,
+                )
                 n_analyzed = sum(1 for d in discs if d.llm_status == "ok")
                 log(f"  → LLM 성공 {n_analyzed}건")
                 # Executive Summary
@@ -126,12 +148,14 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
                     f"설립 {profile.est_dt}"
                 )
                 exec_summary = llm_mod.build_executive_summary(
-                    profile_summary, discs, client=llm_client
+                    profile_summary, discs, client=llm_client, model=model_name,
                 )
-            except RuntimeError as exc:
-                log(f"  ⚠ LLM 건너뜀: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                log(f"  ⚠ LLM 오류: {exc}")
         elif ready and llm_client is None:
             log(f"  ⚠ ANTHROPIC_API_KEY 없음 — 공시 본문 요약 건너뜀")
+        elif not ready:
+            log(f"  본문 다운로드 결과 비어있음 — LLM 요약 생략")
     elif not cfg.analyze_bodies:
         log(f"  본문 분석 꺼짐 (제목만 기록)")
 

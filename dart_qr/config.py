@@ -13,8 +13,18 @@ DART_BASE_URL: str = "https://opendart.fss.or.kr/api"
 
 # ── Anthropic ────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
-# 기본 모델. Haiku 는 비용/속도 우선, Sonnet은 품질 우선.
+# 기본 모델. Haiku 는 비용/속도 우선, Sonnet/Opus 는 품질 우선.
 ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+
+# GUI 드롭다운 표시용 모델 목록. (첫번째 = 기본)
+AVAILABLE_MODELS = [
+    "claude-sonnet-4-5",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+]
 
 # ── 공시 유형 분류 ────────────────────────────────────────────────────────
 # pblntf_ty prefix 기준. LLM 본문 요약 대상 ("중요 공시")

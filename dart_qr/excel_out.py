@@ -25,6 +25,8 @@ from .shareholders import ShareholderBundle, top_holder_summary
 HEADER_FONT = Font(bold=True, color="FFFFFF")
 HEADER_FILL = PatternFill("solid", fgColor="305496")
 SUBHEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
+RATIO_FILL = PatternFill("solid", fgColor="F3F6FB")   # 비율 행 옅은 음영
+RATIO_FONT = Font(italic=True, color="1F3864")
 WRAP = Alignment(wrap_text=True, vertical="top")
 
 # 셀 표시 포맷 — 값은 raw 숫자(원 단위)로 저장하고 표시만 포맷
@@ -120,23 +122,23 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
                     row.append(None)
                 ws.append(row)
                 row_of[key] = ws.max_row
+                r_idx = ws.max_row
+                # 라벨 셀도 이탤릭 + 음영
+                lbl_cell = ws.cell(row=r_idx, column=1)
+                lbl_cell.font = RATIO_FONT
+                lbl_cell.fill = RATIO_FILL
                 num_key, den_key = MARGIN_FORMULA[key]
                 num_r = row_of.get(num_key)
                 den_r = row_of.get(den_key)
-                # 분자/분모 행 번호가 기록됐을 때만 수식 주입
-                if num_r and den_r:
-                    for c in range(2, n_cols + 1):
+                for c in range(2, n_cols + 1):
+                    cell = ws.cell(row=r_idx, column=c)
+                    if num_r and den_r:
                         col = get_column_letter(c)
-                        cell = ws.cell(row=ws.max_row, column=c)
-                        cell.value = (
-                            f'=IFERROR({col}{num_r}/{col}{den_r}*100,"")'
-                        )
-                        cell.number_format = PCT_FMT
-                        cell.alignment = Alignment(horizontal="right")
-                else:
-                    # 분자/분모 행이 먼저 안 나왔으면 (이론상 불가) — 빈 셀
-                    for c in range(2, n_cols + 1):
-                        ws.cell(row=ws.max_row, column=c).number_format = PCT_FMT
+                        cell.value = f'=IFERROR({col}{num_r}/{col}{den_r}*100,"")'
+                    cell.number_format = PCT_FMT
+                    cell.alignment = Alignment(horizontal="right")
+                    cell.font = RATIO_FONT
+                    cell.fill = RATIO_FILL
             else:
                 # 일반 raw 값
                 for y in fin.annual:

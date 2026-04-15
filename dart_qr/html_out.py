@@ -269,6 +269,12 @@ table.fin tr.section-head td{
   padding:6px 10px;
 }
 table.fin tr.yoy td{color:var(--ink-2); font-weight:600;}
+table.fin tr.yoy{background:#fafbfe;}
+table.fin tr.ratio td, table.fin tr.ratio th{
+  font-style: italic;
+  background: #f7f9fc;
+  color: var(--primary);
+}
 table.fin .pos{color:var(--pos);} table.fin .neg{color:var(--neg);}
 
 /* Charts grid */
@@ -443,7 +449,9 @@ def _fin_table(fin: FinancialsBundle) -> str:
             cells.append(f"<td>{_esc(format_value(key, y.values.get(key)))}</td>")
         if fin.latest_quarter:
             cells.append(f"<td>{_esc(format_value(key, fin.latest_quarter.values.get(key)))}</td>")
-        return f"<tr><th>{_esc(label)}</th>{''.join(cells)}</tr>"
+        # 비율 행은 이탤릭 + 옅은 음영
+        tr_cls = ' class="ratio"' if key in PCT_KEYS else ""
+        return f"<tr{tr_cls}><th>{_esc(label)}</th>{''.join(cells)}</tr>"
 
     perf_rows = "".join(_row_for(k) for k in PERFORMANCE_KEYS)
     bs_rows   = "".join(_row_for(k) for k in BALANCE_KEYS)
@@ -566,11 +574,6 @@ def _governance_section(cnt: SectionCounter, sh: ShareholderBundle) -> str:
         ("se", "구분"), ("stock_knd", "주식종류"),
         ("thstrm", "당기"), ("frmtrm", "전기"), ("lwfr", "전전기"),
     ])
-    audit_tbl = _table_from_items(sh.audit_opinion, [
-        ("bsns_year", "사업연도"), ("adtor", "감사인"),
-        ("adt_opinion", "감사의견"), ("emphs_matter", "강조사항"),
-    ])
-
     src = f'<span class="hint">기준 {sh.source_year} 사업보고서</span>' if sh.source_year else ""
 
     # 도넛 차트 왼쪽 + 최대주주 표 오른쪽 grid
@@ -601,9 +604,6 @@ def _governance_section(cnt: SectionCounter, sh: ShareholderBundle) -> str:
 
   <h3>배당 이력</h3>
   {div_tbl}
-
-  <h3>감사의견</h3>
-  {audit_tbl}
 </section>
 """
 

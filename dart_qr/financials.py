@@ -233,17 +233,22 @@ def _extract_year_values(
         # D&A 는 CF(간접법 조정) 또는 IS(성격별) 어디서든 나올 수 있음
         if sj in ("CF", "IS", "CIS"):
             av = abs(v)
+            matched_by_id = False
             if aid in EXCLUDE_IDS:
-                continue  # 사용권자산 상각 등은 D&A 에서 제외
+                continue  # 사용권자산 상각 등 D&A 에서 제외
             if aid in DA_ID_TOTAL:
                 da_total_candidates.append((nm_raw, av))
+                matched_by_id = True
             elif aid in DEP_IDS:
                 dep_id_candidates.append((nm_raw, av))
+                matched_by_id = True
             elif aid in AMORT_IDS:
                 amort_id_candidates.append((nm_raw, av))
-            elif not aid or aid == "-표준계정코드 미사용-":
-                # id 없을 때만 name 패턴 매칭 (사용권/리스 제외)
-                if any(ex in nm for ex in DEP_EXCL_WORDS) and DEP_GENERAL in nm:
+                matched_by_id = True
+
+            # id 매칭이 안 된 경우 (id 없거나, 있어도 내 사전에 없는 비표준 id) → name 매칭
+            if not matched_by_id:
+                if DEP_GENERAL in nm and any(ex in nm for ex in DEP_EXCL_WORDS):
                     pass  # "사용권자산감가상각비" 등 제외
                 elif any(p in nm for p in DEP_EXPLICIT_PATS):
                     dep_nm_candidates.append((nm_raw, av))

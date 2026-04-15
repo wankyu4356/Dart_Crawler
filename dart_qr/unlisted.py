@@ -82,11 +82,15 @@ def fetch_financials(
     years_back: int = 4,
     client: Any = None,
     log: LogFn = print,
+    disclosures=None,
 ) -> FinancialsBundle:
     """비상장 재무 번들.
 
     1) 표준 fnlttSinglAcntAll 시도 → annual 이 years_back 이상이면 바로 반환
-    2) 부족하면 최신 감사보고서 1~2건 LLM 파싱 → 병합
+    2) 부족하면 감사보고서 찾아 LLM 파싱 → 병합
+
+    `disclosures` 가 주어지면 그 안에서 감사보고서를 먼저 찾음 (재호출 없이).
+    못 찾거나 못 채우면 6년치 DART 재조회로 보강.
     """
     # 1) 표준 API 시도 (외감 중 일부 응답)
     std = fin_mod.fetch_all(corp_code, years_back=years_back)
@@ -95,7 +99,14 @@ def fetch_financials(
         return std
 
     log(f"  → 표준 API 응답 부족 ({len(std.annual)}년). 감사보고서 파싱으로 보강")
-    reports = ar.find_latest_audit_reports(corp_code, n=2)
+    prefetched = ar.disclosures_to_rows(disclosures) if disclosures else None
+    reports = ar.find_latest_audit_reports(
+        corp_code, n=3, prefetched_rows=prefetched, log=log,
+    )
+    # 수집된 범위에서 못 찾으면 6년치 재조회
+    if not reports and prefetched is not None:
+        log(f"    기수집 범위에 감사보고서 없음. DART 6년치 재조회")
+        reports = ar.find_latest_audit_reports(corp_code, n=3, log=log)
     if not reports:
         log(f"  → 감사보고서 없음. 표준 결과 그대로 반환")
         return std
@@ -136,6 +147,7 @@ def fetch_governance(
     end_de: Optional[str] = None,
     client: Any = None,
     log: LogFn = print,
+    disclosures=None,
 ) -> ShareholderBundle:
     """비상장 지배구조 번들.
 
@@ -150,7 +162,12 @@ def fetch_governance(
         return std
 
     log(f"  → 표준 API 비어있음. 감사보고서 주석에서 지배구조 추출")
-    reports = ar.find_latest_audit_reports(corp_code, n=1)
+    prefetched = ar.disclosures_to_rows(disclosures) if disclosures else None
+    reports = ar.find_latest_audit_reports(
+        corp_code, n=1, prefetched_rows=prefetched, log=log,
+    )
+    if not reports and prefetched is not None:
+        reports = ar.find_latest_audit_reports(corp_code, n=1, log=log)
     if not reports:
         return std
     rcept_no = reports[0].get("rcept_no") or ""

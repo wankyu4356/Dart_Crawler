@@ -30,6 +30,7 @@ def _run_cli(args: argparse.Namespace) -> int:
         body_limit=args.limit,
         years_back=args.years,
         output_dir=args.outdir,
+        anthropic_model=args.model or None,
     )
     res = run_quickreport(cfg, log=print)
     print(f"\n✓ 완료: {res.corp_name}")
@@ -78,6 +79,8 @@ def main() -> int:
                         help="본문 분석·요약 끄기 (제목만)")
     parser.add_argument("-o", "--outdir", default=".",
                         help="출력 폴더")
+    parser.add_argument("--model", default="",
+                        help="Claude 모델 (예: claude-sonnet-4-5)")
     args = parser.parse_args()
 
     if args.version:

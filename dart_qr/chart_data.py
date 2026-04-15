@@ -104,9 +104,10 @@ def build_bs_chart(fin: FinancialsBundle) -> Dict[str, Any]:
 
     return {
         "labels": labels,
+        # stacked 순서: 자본이 아래(베이스), 부채가 위 (재무상태 관습)
         "datasets": [
-            {"label": "부채", "data": series("total_liabilities"), "backgroundColor": "#ef5350"},
             {"label": "자본", "data": series("total_equity"),       "backgroundColor": "#26a69a"},
+            {"label": "부채", "data": series("total_liabilities"), "backgroundColor": "#ef5350"},
         ],
         "unit": "조원",
     }
@@ -127,6 +128,7 @@ def build_ownership_chart(
         return None
 
     # 최대주주·특수관계인 리스트 (지분율 있는 것만)
+    SKIP_NAMES = {"계", "소계", "합계", "총계", "보통주계", "우선주계"}
     parties: List[tuple[str, float]] = []
     for r in sh.major:
         rate = _f(r.get("trmend_posesn_stock_qota_rt"))
@@ -134,6 +136,11 @@ def build_ownership_chart(
             continue
         name = (r.get("nm") or "").strip() or "-"
         relate = (r.get("relate") or "").strip()
+        # 합계/소계 행 제외
+        if name in SKIP_NAMES:
+            continue
+        if not relate and name.endswith("계"):
+            continue
         disp = f"{name}" if not relate or relate == "본인" else f"{name} ({relate})"
         parties.append((disp, rate))
     if not parties:

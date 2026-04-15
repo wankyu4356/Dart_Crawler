@@ -90,19 +90,27 @@ class App(tk.Tk):
         ttk.Spinbox(frm, from_=1, to=10, width=6, textvariable=self.var_years).grid(
             row=2, column=1, sticky="w")
 
+        # Claude 모델 선택
+        ttk.Label(frm, text="Claude 모델").grid(row=3, column=0, sticky="w", padx=6)
+        self.var_model = tk.StringVar(value=cfgmod.ANTHROPIC_MODEL)
+        ttk.Combobox(frm, textvariable=self.var_model,
+                     values=cfgmod.AVAILABLE_MODELS,
+                     width=30, state="readonly").grid(
+            row=3, column=1, sticky="w", padx=6)
+
         # API Key
-        ttk.Label(frm, text="Anthropic API Key").grid(row=3, column=0, sticky="w", padx=6)
+        ttk.Label(frm, text="Anthropic API Key").grid(row=4, column=0, sticky="w", padx=6)
         self.var_key = tk.StringVar(value=cfgmod.ANTHROPIC_API_KEY)
         ttk.Entry(frm, textvariable=self.var_key, width=50, show="*").grid(
-            row=3, column=1, columnspan=3, sticky="we", padx=6)
+            row=4, column=1, columnspan=3, sticky="we", padx=6)
 
         # 출력 폴더
-        ttk.Label(frm, text="출력 폴더").grid(row=4, column=0, sticky="w", padx=6, pady=4)
+        ttk.Label(frm, text="출력 폴더").grid(row=5, column=0, sticky="w", padx=6, pady=4)
         self.var_outdir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
         ttk.Entry(frm, textvariable=self.var_outdir, width=50).grid(
-            row=4, column=1, columnspan=3, sticky="we", padx=6)
+            row=5, column=1, columnspan=3, sticky="we", padx=6)
         ttk.Button(frm, text="찾아보기", command=self._browse).grid(
-            row=4, column=4, padx=4)
+            row=5, column=4, padx=4)
 
         # 실행 버튼
         self.btn_run = ttk.Button(self, text="분석 시작", command=self._start)
@@ -186,6 +194,7 @@ class App(tk.Tk):
             years_back=int(self.var_years.get()),
             output_dir=self.var_outdir.get().strip() or ".",
             anthropic_api_key=self.var_key.get().strip() or None,
+            anthropic_model=self.var_model.get().strip() or None,
         )
         self._running = True
         self.btn_run.config(state="disabled")

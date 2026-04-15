@@ -151,13 +151,17 @@ def summarize_batch(
     client=None,
     max_workers: int = 4,
     log: Optional[Callable[[str], None]] = None,
+    model: str = ANTHROPIC_MODEL,
 ) -> None:
     client = client or get_client()
     targets = [d for d in discs if d.body and d.llm_status == "pending"]
     if not targets:
         return
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(summarize_disclosure, d, client): d for d in targets}
+        futures = {
+            pool.submit(summarize_disclosure, d, client, model): d
+            for d in targets
+        }
         done = 0
         for fut in as_completed(futures):
             d = futures[fut]
