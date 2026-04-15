@@ -10,6 +10,7 @@
 를 LLM 으로 구조화 추출.
 """
 from __future__ import annotations
+import re
 from typing import Any, Callable, Dict, List, Optional
 
 from . import audit_report as ar
@@ -27,12 +28,92 @@ REPORT_PRIORITY = [
     ("분기보고서", 1),
 ]
 
+# 정정/변경 접두어 — 본문이 부분 변경본만 담겨 LLM 파싱이 어려움 → 후순위
+AMEND_PREFIX_RE = re.compile(
+    r"^\s*\[(?:첨부정정|기재정정|정정|기재|정정제출요구|정정명령부과|"
+    r"첨부추가|변경등록|연장결정|발행조건확정)\]"
+)
+
+
+def _is_amended(report_nm: str) -> bool:
+    return bool(AMEND_PREFIX_RE.match(report_nm or ""))
+
+
+def _base_report_name(report_nm: str) -> str:
+    """정정 접두어 제거한 기본 보고서명."""
+    return AMEND_PREFIX_RE.sub("", report_nm or "").strip()
+
 
 def _report_priority(report_nm: str) -> int:
+    base = _base_report_name(report_nm)
     for name, p in REPORT_PRIORITY:
-        if name in report_nm:
+        if name in base:
             return p
     return 0
+
+
+def pick_source_reports(
+    discs: List[Disclosure],
+    is_listed: bool,
+    corp_code: str,
+    log: Optional[LogFn] = None,
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    """상장/비상장 공통 — 본문 소스로 쓸 보고서 **후보 리스트** (우선순위순).
+
+    정렬 기준:
+      1) 보고서 우선순위 (사업보고서 4 > 반기 2 > 분기 1)
+      2) **원본 우선** — 정정본([첨부정정] 등) 은 후순위
+      3) 최신 접수일자
+    """
+    out: List[Dict[str, Any]] = []
+    if is_listed:
+        cands = [d for d in discs if _report_priority(d.report_nm) > 0]
+        if not cands:
+            if log:
+                log("  (정기보고서 없음)")
+            return []
+        def _fy_num(d):
+            m = re.search(r"\((\d{4})[.\-/년]?\s*\d{1,2}", d.report_nm or "")
+            return int(m.group(1)) if m else 0
+
+        # 1) 보고서 종류 우선 (사업 > 반기 > 분기)
+        # 2) 결산연도 최신 우선
+        # 3) 같은 연도 안에서 원본 > 정정본
+        # 4) 접수일 최신
+        cands.sort(key=lambda d: (
+            -_report_priority(d.report_nm),
+            -_fy_num(d),
+            1 if _is_amended(d.report_nm) else 0,
+            -int(str(d.rcept_dt or "0").replace("-", "") or "0"),
+        ))
+        # 같은 결산년도·기본보고서명 조합은 최대 2건(원본+정정)까지만
+        seen: Dict[tuple, int] = {}
+        for d in cands:
+            base = _base_report_name(d.report_nm)
+            # 결산연도 추출 (2024.12 / 2024.06 등)
+            m = re.search(r"\((\d{4})[.\-/년]?\s*\d{1,2}", d.report_nm or "")
+            fy = m.group(1) if m else ""
+            key = (base, fy)
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > 2:
+                continue
+            out.append({
+                "rcept_no": d.rcept_no, "rcept_dt": d.rcept_dt,
+                "report_nm": d.report_nm,
+                "_amended": _is_amended(d.report_nm),
+            })
+            if len(out) >= limit:
+                break
+        return out
+    else:
+        pre = ar.disclosures_to_rows(discs) if discs else None
+        reports = ar.find_latest_audit_reports(
+            corp_code, n=limit, prefetched_rows=pre, log=log,
+        )
+        if not reports and pre is not None:
+            reports = ar.find_latest_audit_reports(corp_code, n=limit, log=log)
+        return [dict(r) for r in (reports or [])]
 
 
 def pick_source_report(
@@ -41,29 +122,9 @@ def pick_source_report(
     corp_code: str,
     log: Optional[LogFn] = None,
 ) -> Optional[Dict[str, Any]]:
-    """상장: 최신 사업보고서 > 반기 > 분기. 비상장: 최신 감사보고서.
-
-    반환: {"rcept_no","rcept_dt","report_nm"} dict 또는 None.
-    """
-    if is_listed:
-        cands = [d for d in discs if _report_priority(d.report_nm) > 0]
-        if not cands:
-            if log:
-                log("  (정기보고서 없음)")
-            return None
-        cands.sort(key=lambda d: (-_report_priority(d.report_nm),
-                                  -int(str(d.rcept_dt or "0").replace("-", ""))))
-        c = cands[0]
-        return {"rcept_no": c.rcept_no, "rcept_dt": c.rcept_dt,
-                "report_nm": c.report_nm}
-    else:
-        pre = ar.disclosures_to_rows(discs) if discs else None
-        reports = ar.find_latest_audit_reports(
-            corp_code, n=1, prefetched_rows=pre, log=log,
-        )
-        if not reports and pre is not None:
-            reports = ar.find_latest_audit_reports(corp_code, n=1, log=log)
-        return reports[0] if reports else None
+    """기존 호환용 — 가장 상위 1건만 반환."""
+    lst = pick_source_reports(discs, is_listed, corp_code, log=log, limit=1)
+    return lst[0] if lst else None
 
 
 # "II. 사업의 내용" 섹션 경계 마커
@@ -215,39 +276,41 @@ def fetch_business_profile(
     model: Optional[str] = None,
     log: LogFn = print,
 ) -> Optional[Dict[str, Any]]:
-    """오케스트레이션: 보고서 선택 → 본문 다운로드 → 섹션 슬라이싱 → LLM 추출.
-
-    결과 dict 에 선택한 보고서 정보(report_nm, rcept_no, rcept_dt)도 포함.
-    """
-    src = pick_source_report(discs, is_listed, corp_code, log=log)
-    if src is None:
+    """보고서 후보를 우선순위대로 순회 — 본문 확보 + 섹션 슬라이싱 실질 성공까지."""
+    candidates = pick_source_reports(discs, is_listed, corp_code, log=log, limit=5)
+    if not candidates:
         log("  → 회사 개요 추출할 보고서 없음")
         return None
-    log(f"  보고서: {src['report_nm']} ({src['rcept_no']})")
-
-    # 사업보고서는 매우 큰 경우가 있어 cap 큰 값으로
-    body = fetch_body(src["rcept_no"], cap=200000)
-    if not body:
-        log("  → 본문 다운로드 실패")
-        return None
-    log(f"  본문 {len(body):,}자")
-
-    section = slice_business_section(body)
-    if not section:
-        log("  → 사업 섹션 슬라이싱 실패")
-        return None
-    log(f"  사업 섹션 {len(section):,}자 → Claude 추출")
 
     kwargs: Dict[str, Any] = {}
     if model:
         kwargs["model"] = model
-    parsed = llm_mod.extract_business_overview(section, client=client, **kwargs)
-    if not parsed:
-        log("  → LLM 추출 실패")
-        return None
 
-    # 소스 보고서 메타 병합
-    parsed["_source_report_nm"] = src.get("report_nm", "")
-    parsed["_source_rcept_no"] = src.get("rcept_no", "")
-    parsed["_source_rcept_dt"] = src.get("rcept_dt", "")
-    return parsed
+    for idx, src in enumerate(candidates, 1):
+        tag = " (정정본)" if src.get("_amended") else ""
+        log(f"  [{idx}/{len(candidates)}] 보고서{tag}: {src.get('report_nm','')} "
+            f"({src.get('rcept_no','')})")
+        body = fetch_body(src.get("rcept_no", ""), cap=240000)
+        if not body or len(body) < 500:
+            log(f"    본문 부족({len(body) if body else 0}자) → 다음 후보 시도")
+            continue
+        log(f"    본문 {len(body):,}자")
+
+        section = slice_business_section(body)
+        if not section or len(section) < 300:
+            log(f"    사업 섹션 부족({len(section) if section else 0}자) → 다음 후보 시도")
+            continue
+        log(f"    사업 섹션 {len(section):,}자 → Claude 추출")
+
+        parsed = llm_mod.extract_business_overview(section, client=client, **kwargs)
+        if not parsed:
+            log(f"    LLM 응답 비어있음 → 다음 후보 시도")
+            continue
+
+        parsed["_source_report_nm"] = src.get("report_nm", "")
+        parsed["_source_rcept_no"]  = src.get("rcept_no", "")
+        parsed["_source_rcept_dt"]  = src.get("rcept_dt", "")
+        return parsed
+
+    log("  → 모든 후보 시도 실패")
+    return None

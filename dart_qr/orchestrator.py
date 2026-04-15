@@ -66,43 +66,58 @@ def _fill_da_from_body(
     log(f"  D&A 보강: {len(missing_years)}개 연도 누락 "
         f"({', '.join(str(y) for y in missing_years)}) → 본문 LLM 추출 시도")
 
-    src = biz_mod.pick_source_report(discs, is_listed, corp_code, log=log)
-    if src is None:
+    candidates = biz_mod.pick_source_reports(
+        discs, is_listed, corp_code, log=log, limit=4,
+    )
+    if not candidates:
         log(f"    보고서 없음 → D&A 보강 skip")
         return
-    rcept_no = src.get("rcept_no")
-    if not rcept_no:
-        return
     from . import disclosures as _d
-    # 사업보고서는 수백 페이지 → 일반 cap 안에 CF/성격별 주석이 빠질 수 있음.
-    # 훨씬 큰 cap 으로 받은 뒤 D&A 관련 구간만 다시 슬라이싱해 Claude 에 제공.
-    body_full = _d.fetch_body(rcept_no, cap=600000)
-    if not body_full:
-        log(f"    본문 비어있음 → D&A 보강 skip")
-        return
-    body = biz_mod.slice_da_relevant(body_full, cap=60000)
-    log(f"    본문 {len(body_full):,}자 → D&A 관련 구간 {len(body):,}자 슬라이싱")
-    try:
-        parsed = llm_mod.extract_da_from_body(
-            body, client=client, **({"model": model} if model else {}),
-        )
-    except Exception as exc:  # noqa: BLE001
-        log(f"    LLM 오류: {exc}")
-        return
-    by_year = {}
-    for d in parsed or []:
-        y = d.get("year")
-        try:
-            y = int(y)
-        except (TypeError, ValueError):
+
+    aggregated: Dict[int, Dict[str, Any]] = {}
+    for idx, src in enumerate(candidates, 1):
+        rcept_no = src.get("rcept_no")
+        if not rcept_no:
             continue
-        by_year[y] = d
+        tag = " (정정본)" if src.get("_amended") else ""
+        log(f"    [{idx}/{len(candidates)}] {src.get('report_nm','')}{tag} "
+            f"({rcept_no})")
+        body_full = _d.fetch_body(rcept_no, cap=600000)
+        if not body_full or len(body_full) < 1000:
+            log(f"      본문 부족 → 다음 후보")
+            continue
+        body = biz_mod.slice_da_relevant(body_full, cap=60000)
+        log(f"      본문 {len(body_full):,}자 → D&A 관련 {len(body):,}자")
+        try:
+            parsed = llm_mod.extract_da_from_body(
+                body, client=client, **({"model": model} if model else {}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"      LLM 오류: {exc}")
+            continue
+        for d in parsed or []:
+            y = d.get("year")
+            try:
+                y = int(y)
+            except (TypeError, ValueError):
+                continue
+            if y in aggregated:
+                continue  # 먼저 본 것 유지
+            aggregated[y] = d
+        # 모든 누락 연도가 채워졌으면 조기 종료
+        if all(yr in aggregated for yr in missing_years):
+            log(f"      → 모든 누락 연도 확보, 순회 종료")
+            break
+
+    if not aggregated:
+        log(f"    → D&A 보강 수확 없음")
+        return
 
     filled = 0
     for yf in fin.annual:
         if yf.values.get("da") is not None:
             continue
-        d = by_year.get(yf.year)
+        d = aggregated.get(yf.year)
         if not d:
             continue
         dep = d.get("dep") if isinstance(d.get("dep"), (int, float)) else None
@@ -112,7 +127,6 @@ def _fill_da_from_body(
         yf.values["dep"] = dep
         yf.values["amort"] = amort
         yf.values["da"] = (dep or 0.0) + (amort or 0.0)
-        # EBITDA / EBITDAM 재파생
         op = yf.values.get("op_income")
         if op is not None:
             yf.values["ebitda"] = op + yf.values["da"]

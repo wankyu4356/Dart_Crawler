@@ -6,6 +6,7 @@
     ZIP 해제 후 텍스트만 추출. Claude 입력용으로 길이 cap.
 """
 from __future__ import annotations
+import html
 import io
 import re
 import zipfile
@@ -91,18 +92,40 @@ def _xml_text(xml_bytes: bytes) -> str:
 
 
 def fetch_body(rcept_no: str, cap: int = 30000) -> str:
-    """`document.xml` → ZIP 해제 → 모든 XML 텍스트 합쳐 리턴. 실패 시 ''."""
+    """`document.xml` → ZIP 해제 → XML/HTML 본문 텍스트 합본. 실패 시 ''.
+
+    일부 공시(특히 정정본)는 ZIP 안에 XML 없이 HTML/htm 만 있는 경우가 있어
+    양쪽 모두 지원한다.
+    """
     data = api.document_zip(rcept_no)
     if not data:
         return ""
+    texts: List[str] = []
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            names = [n for n in zf.namelist() if n.lower().endswith(".xml")]
-            texts: List[str] = []
-            for n in names:
-                try:
-                    t = _xml_text(zf.read(n))
-                except Exception:
+            for name in zf.namelist():
+                lower = name.lower()
+                if lower.endswith(".xml"):
+                    try:
+                        t = _xml_text(zf.read(name))
+                    except Exception:
+                        continue
+                elif lower.endswith((".html", ".htm")):
+                    try:
+                        raw = zf.read(name).decode("utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    # script/style 제거
+                    raw = re.sub(r"<script[\s\S]*?</script>", " ", raw,
+                                 flags=re.I)
+                    raw = re.sub(r"<style[\s\S]*?</style>", " ", raw,
+                                 flags=re.I)
+                    raw = re.sub(r"<br\s*/?>", "\n", raw, flags=re.I)
+                    raw = re.sub(r"</p\s*>", "\n", raw, flags=re.I)
+                    raw = re.sub(r"<[^>]+>", " ", raw)
+                    t = html.unescape(raw)
+                    t = _WS_RE.sub(" ", t).strip()
+                else:
                     continue
                 if t:
                     texts.append(t)
