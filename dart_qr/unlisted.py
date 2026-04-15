@@ -116,7 +116,8 @@ def fetch_financials(
 
     # ─── HTML 표 파싱 (LLM 비의존) — 원본 재무제표 표를 모두 수집 ────
     all_tables: List[Any] = []
-    llm_merged: Dict[int, YearFin] = {y.year: y for y in std.annual}
+    llm_cfs: Dict[int, YearFin] = {}
+    llm_ofs: Dict[int, YearFin] = {}
     for r in reports:
         rcept_no = r.get("rcept_no") or ""
         if not rcept_no:
@@ -148,32 +149,43 @@ def fetch_financials(
                         continue
                     if not yf.fs_div or yf.fs_div not in ("CFS", "OFS"):
                         yf.fs_div = mode
-                    if yf.year in llm_merged:
-                        continue
-                    llm_merged[yf.year] = yf
+                    # fs_div 별로 분리 저장 (HTML 토글이 annual_cfs/ofs 를 참조)
+                    target = llm_cfs if yf.fs_div == "CFS" else llm_ofs
+                    target.setdefault(yf.year, yf)
 
     # ─── 표 기반 YearFin 생성 (연결/별도 각각) ────────────────────────
     cfs_years = afp.build_year_fins_from_tables(all_tables, fs_div="CFS")
     ofs_years = afp.build_year_fins_from_tables(all_tables, fs_div="OFS")
 
-    # hybrid annual: CFS 우선, 빠진 연도는 OFS → LLM → std 순으로 보강
-    merged_by_year: Dict[int, YearFin] = {}
-    for y in cfs_years:
-        merged_by_year.setdefault(y.year, y)
-    for y in ofs_years:
-        merged_by_year.setdefault(y.year, y)
-    for y, yf in llm_merged.items():
-        merged_by_year.setdefault(y, yf)
+    # 표 파싱 결과 + LLM 결과 병합 (표 우선)
+    def _merge(year_list, llm_map):
+        merged: Dict[int, YearFin] = {y.year: y for y in year_list}
+        for yr, yf in llm_map.items():
+            merged.setdefault(yr, yf)
+        return sorted(merged.values(), key=lambda y: y.year, reverse=True)
+
+    cfs_final = _merge(cfs_years, llm_cfs)
+    ofs_final = _merge(ofs_years, llm_ofs)
+
+    # hybrid annual: CFS 우선, 빠진 연도는 OFS 보강 + std 최후
+    hybrid_by_year: Dict[int, YearFin] = {}
+    for y in cfs_final:
+        hybrid_by_year.setdefault(y.year, y)
+    for y in ofs_final:
+        hybrid_by_year.setdefault(y.year, y)
+    for y in std.annual:
+        hybrid_by_year.setdefault(y.year, y)
 
     annual = sorted(
-        merged_by_year.values(), key=lambda y: y.year, reverse=True,
+        hybrid_by_year.values(), key=lambda y: y.year, reverse=True,
     )[:years_back]
-    log(f"  → 최종 {len(annual)}개년 재무 · 원본 표 {len(all_tables)}건 수집")
+    log(f"  → 최종 {len(annual)}개년 재무 · 원본 표 {len(all_tables)}건 "
+        f"· 연결 {len(cfs_final)}년 · 별도 {len(ofs_final)}년")
     return FinancialsBundle(
         annual=annual,
         latest_quarter=std.latest_quarter,
-        annual_cfs=sorted(cfs_years, key=lambda y: y.year, reverse=True)[:years_back],
-        annual_ofs=sorted(ofs_years, key=lambda y: y.year, reverse=True)[:years_back],
+        annual_cfs=cfs_final[:years_back],
+        annual_ofs=ofs_final[:years_back],
         indicators=std.indicators,
         raw_rows=std.raw_rows,
         raw_fs_tables=all_tables,

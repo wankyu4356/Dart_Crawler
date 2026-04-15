@@ -243,15 +243,27 @@ def _parse_html_tables(
     # script/style 제거 (파서 충돌 방지)
     clean = re.sub(r"<script[\s\S]*?</script>", " ", html_text, flags=re.I)
     clean = re.sub(r"<style[\s\S]*?</style>", " ", clean, flags=re.I)
+    # DART XBRL/XHTML 에서 오는 특수 요소 — namespace prefix 제거
+    # (예: <tbl:table>, <a:tr>, </w:tbl>) → html.parser 가 <table>/<tr> 로 인식하도록
+    clean = re.sub(r"<(/?)[a-zA-Z]+:([a-zA-Z]+)", r"<\1\2", clean)
     # 개체 참조 복원은 HTMLParser 가 처리 (convert_charrefs=True)
     extractor = _TableExtractor()
     try:
         extractor.feed(clean)
     except Exception:  # noqa: BLE001
-        return []
+        pass  # 일부 파싱 성공분은 tables 에 남음
+    raw_tables = extractor.tables
+
+    # ── fallback: HTMLParser 가 못 찾으면 regex 로 <table>...</table> 블록
+    #    직접 추출. HTMLParser 가 뭐라도 찾았으면 그대로 사용 (중복 방지).
+    if not raw_tables:
+        regex_tables = _regex_extract_tables(clean)
+        for pre, block_rows in regex_tables:
+            raw_tables.append(block_rows)
+            extractor.pre_texts.append(pre)
 
     results: List[RawFsTable] = []
-    for i, tbl in enumerate(extractor.tables):
+    for i, tbl in enumerate(raw_tables):
         if not tbl or len(tbl) < 2:
             continue
         # 금액 셀이 충분해야 재무제표 후보
@@ -267,7 +279,18 @@ def _parse_html_tables(
         )[:600]
         code, label = _classify_table(pre, first_blob)
         if code == "UNKNOWN":
-            continue
+            # 표 내용에 자산총계/매출액/영업이익/감가상각비 등이 있으면 재무제표로 간주
+            body_blob = " ".join(cell for row in tbl for cell in row)[:2000]
+            body_blob_norm = body_blob.replace(" ", "")
+            if "자산총계" in body_blob_norm or "부채총계" in body_blob_norm:
+                code, label = "BS", "재무상태표"
+            elif "매출액" in body_blob_norm or "영업이익" in body_blob_norm or \
+                 "영업수익" in body_blob_norm or "당기순이익" in body_blob_norm:
+                code, label = "IS", "손익계산서"
+            elif "영업활동현금흐름" in body_blob_norm or "영업활동으로인한현금흐름" in body_blob_norm:
+                code, label = "CF", "현금흐름표"
+            else:
+                continue
 
         # 헤더 행 선택: 연도가 가장 많이 등장하는 행 (상위 4행 중)
         header_idx = 0
@@ -316,6 +339,43 @@ def _parse_html_tables(
             rcept_no=rcept_no,
             report_nm=report_nm,
         ))
+    return results
+
+
+# ── Regex 기반 테이블 추출 fallback (HTMLParser 실패 대비) ─────────────
+_TABLE_BLOCK_RE = re.compile(r"<table\b[^>]*>([\s\S]*?)</table>", re.I)
+_ROW_BLOCK_RE = re.compile(r"<tr\b[^>]*>([\s\S]*?)</tr>", re.I)
+_CELL_BLOCK_RE = re.compile(r"<(?:td|th)\b[^>]*>([\s\S]*?)</(?:td|th)>", re.I)
+_TAG_STRIP_RE = re.compile(r"<[^>]+>")
+_BR_RE = re.compile(r"<br\s*/?>", re.I)
+
+
+def _regex_extract_tables(text: str) -> List[Tuple[str, List[List[str]]]]:
+    """`<table>...</table>` 블록을 직접 긁어서 (pre_text, 2-D 문자열 행) 반환.
+
+    HTMLParser 가 namespace/DOCTYPE/CDATA 등으로 실패할 때 fallback.
+    """
+    results: List[Tuple[str, List[List[str]]]] = []
+    for m in _TABLE_BLOCK_RE.finditer(text):
+        # 앞쪽 최대 600자를 pre_text 로 추출 (태그 제거)
+        start = m.start()
+        pre_raw = text[max(0, start - 800):start]
+        pre_clean = _TAG_STRIP_RE.sub(" ", pre_raw)
+        pre_clean = html.unescape(_normalize_ws(pre_clean))[-500:]
+
+        block = m.group(1)
+        rows: List[List[str]] = []
+        for mr in _ROW_BLOCK_RE.finditer(block):
+            row_src = mr.group(1)
+            cells: List[str] = []
+            for mc in _CELL_BLOCK_RE.finditer(row_src):
+                cell_src = _BR_RE.sub(" ", mc.group(1))
+                cell_txt = _TAG_STRIP_RE.sub(" ", cell_src)
+                cells.append(_normalize_ws(html.unescape(cell_txt)))
+            if cells:
+                rows.append(cells)
+        if rows:
+            results.append((pre_clean, rows))
     return results
 
 
@@ -444,14 +504,28 @@ def fetch_and_parse_audit_tables(
         if log:
             log(f"    ZIP 다운 실패: {rcept_no}")
         return []
+    # 진단용 raw 카운트
+    total_table_tags = 0
+    if log:
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                for name in zf.namelist():
+                    if not name.lower().endswith((".html", ".htm", ".xml")):
+                        continue
+                    try:
+                        raw = zf.read(name).decode("utf-8", errors="ignore")
+                    except Exception:
+                        continue
+                    total_table_tags += len(re.findall(r"<table\b", raw, flags=re.I))
+        except Exception:  # noqa: BLE001
+            pass
     tables = parse_audit_fs_from_zip(zip_bytes, rcept_no, report_nm)
     if log:
         counts: Dict[str, int] = {}
         for t in tables:
             counts[t.statement] = counts.get(t.statement, 0) + 1
+        summary = f"원본 <table> 태그 {total_table_tags}개 → 재무제표로 분류 {len(tables)}건"
         if counts:
-            log(f"    원본 재무제표 표 {len(tables)}건 " +
-                "(" + ", ".join(f"{k}:{v}" for k, v in counts.items()) + ")")
-        else:
-            log(f"    원본 재무제표 표 0건")
+            summary += " (" + ", ".join(f"{k}:{v}" for k, v in counts.items()) + ")"
+        log(f"    {summary}")
     return tables

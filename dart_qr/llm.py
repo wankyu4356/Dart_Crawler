@@ -172,7 +172,11 @@ def summarize_batch(
                 d.summary = f"(LLM 오류: {exc})"
             done += 1
             if log:
-                log(f"  LLM {done}/{len(targets)}: {d.rcept_dt} {d.report_nm[:30]} [{d.llm_status}]")
+                # error 케이스는 본문 앞부분(에러 메시지)까지 같이 노출
+                extra = ""
+                if d.llm_status == "error":
+                    extra = f" — {(d.summary or '')[:120]}"
+                log(f"  LLM {done}/{len(targets)}: {d.rcept_dt} {d.report_nm[:30]} [{d.llm_status}]{extra}")
 
 
 # ── Executive Summary ───────────────────────────────────────────────────
