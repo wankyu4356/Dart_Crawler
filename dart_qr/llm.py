@@ -377,46 +377,55 @@ key_insights 형식:
 
 
 # ── D&A 전용 추출 (최후 fallback) ──────────────────────────────────────
-DA_SYSTEM = """당신은 한국 회계 전문가입니다. 주어진 한국 기업 공시 본문
-발췌(현금흐름표/비용의 성격별 분류 주석 등)에서 **연도별 감가상각비
-(Depreciation)와 무형자산상각비(Amortisation)** 를 JSON 배열로 추출합니다.
+DA_SYSTEM = """당신은 한국 회계 전문가입니다. 한국 기업 공시 본문 발췌에서
+**연도별 감가상각비(Depreciation)와 무형자산상각비(Amortisation)** 를
+JSON 배열로 추출합니다.
+
+추출 우선순위 (위에서부터 찾고, 있으면 그걸 사용):
+  1. **현금흐름표 (Statement of Cash Flows)** — "영업활동현금흐름"
+     간접법 조정 항목의 "감가상각비" / "무형자산상각비" 라인 (최우선).
+  2. **현금흐름표 주석** — 본문에 현금흐름표가 안 보이거나 감가상각 라인이
+     없으면, "현금흐름표에 대한 주석" / "유형자산" / "무형자산" 주석에서
+     당기 증가·감소 중 "상각" 또는 "감가상각" 항목.
+  3. 비용의 성격별 분류 주석 (2순위 fallback).
 
 핵심 원칙:
 1) 본문에 명시된 사실만. 추정·외부지식 금지.
-2) 숫자는 **원 단위**로 환산 — 본문이 "백만원" 기준이면 ×1,000,000,
-   "천원" 기준이면 ×1,000. 단위를 반드시 확인.
+2) 숫자는 **원 단위**로 환산 — 본문이 "백만원" 이면 ×1,000,000,
+   "천원" 이면 ×1,000. 단위는 표 제목이나 상단 명시를 확인.
 3) **사용권자산 감가상각비 / 리스자산 상각비 / 리스부채 상각 등은 제외**
    (전통적 D&A 와 분리).
-4) 현금흐름표(간접법)의 "영업활동현금흐름" 조정 항목 또는 "비용의 성격별
-   분류" 주석에서 값을 찾으세요.
-5) **본문에 나오는 모든 연도를 찾으세요**. 당기/전기/전전기 비교표가 있으면
-   3개년 모두 포함. 일반적으로 2~4개년이 있습니다.
-6) 응답은 **JSON 배열만** (마크다운 코드펜스/주석 금지).
+4) 본문에 나오는 **모든 연도**를 포함 (당기/전기/전전기 비교표가 있으면 3개년).
+5) 응답은 **JSON 배열만** (마크다운/코드펜스 없이).
+6) 본문에 정말 데이터가 없으면 `[]` 반환 — 거짓 수치 생성 금지.
 
 스키마:
 [
-  {"year": 2024, "dep": 숫자|null, "amort": 숫자|null},
-  {"year": 2023, "dep": 숫자|null, "amort": 숫자|null},
-  {"year": 2022, "dep": 숫자|null, "amort": 숫자|null}
+  {"year": 2024, "dep": 숫자|null, "amort": 숫자|null,
+   "source": "cash_flow"|"cash_flow_note"|"cost_by_nature"|null},
+  ...
 ]
 
-dep = 유형자산 감가상각비 (사용권자산 제외).
+예시:
+  현금흐름표에 "감가상각비 393,500 (백만원)" 당기 →
+    [{"year":2024, "dep":393500000000, "amort":null, "source":"cash_flow"}]
+
+dep = 유형자산 감가상각비 (사용권 제외).
 amort = 무형자산 상각비.
-본문에 D&A 합계 라인("감가상각 및 무형자산상각비")만 있고 분리가 안 되면
-dep 에 합계, amort 는 null 로.
-특정 연도에 수치가 없으면 그 연도 객체 전체를 생략하지 말고 dep/amort 를
-null 로 포함하되 year 는 반드시 기입."""
+D&A 합계 라인("감가상각 및 무형자산상각비")만 있으면 dep 에 합계, amort null."""
 
 
 def extract_da_from_body(
     body: str,
     client=None,
     model: str = ANTHROPIC_MODEL,
-    max_tokens: int = 1200,
-) -> list:
-    """본문 텍스트 → [{year, dep, amort}, ...]. 실패 시 빈 리스트."""
+    max_tokens: int = 1500,
+    return_raw: bool = False,
+):
+    """본문 텍스트 → [{year, dep, amort}, ...]. 실패 시 빈 리스트.
+    return_raw=True 이면 (parsed, raw_response_str) 튜플 반환 (디버그용)."""
     if not body:
-        return []
+        return ([], "") if return_raw else []
     client = client or get_client()
     try:
         resp = client.messages.create(
@@ -435,9 +444,11 @@ def extract_da_from_body(
         raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
         parsed = _parse_json_array(raw)
         if not isinstance(parsed, list):
-            return []
-        return parsed
-    except Exception:  # noqa: BLE001
+            parsed = []
+        return (parsed, raw) if return_raw else parsed
+    except Exception as exc:  # noqa: BLE001
+        if return_raw:
+            return ([], f"__EXCEPTION__ {exc}")
         return []
 
 

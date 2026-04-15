@@ -141,23 +141,35 @@ def _fill_da_per_year(
     for yf in missing:
         src = _find_report_for_year(yf.year)
         if src is None:
-            log(f"    [{yf.year}] 해당 연도 사업보고서 없음")
+            log(f"    [{yf.year}] 해당 연도 사업보고서 없음 — skip")
             continue
         log(f"    [{yf.year}] {src.report_nm} ({src.rcept_no})")
-        body_full = _d.fetch_body(src.rcept_no, cap=600000)
+        body_full = _d.fetch_body(src.rcept_no, cap=900000)
         if not body_full or len(body_full) < 1000:
-            log(f"      본문 부족 → skip")
+            log(f"      본문 다운로드 실패 또는 짧음 ({len(body_full) if body_full else 0}자) → skip")
             continue
-        body = biz_mod.slice_da_relevant(body_full, cap=50000)
-        log(f"      본문 {len(body_full):,}자 → D&A 관련 {len(body):,}자")
+        # 1차: 마커 기반 슬라이싱
+        body = biz_mod.slice_da_relevant(body_full, cap=120000)
+        slice_method = "마커 슬라이싱"
+        # 2차 fallback: 슬라이싱 결과가 너무 작으면 본문 앞부분 그대로
+        if len(body) < 5000:
+            body = body_full[:120000]
+            slice_method = "fallback (앞 120k)"
+        log(f"      본문 {len(body_full):,}자 → {slice_method} {len(body):,}자")
         try:
-            parsed = llm_mod.extract_da_from_body(
-                body, client=client, **({"model": model} if model else {}),
+            parsed, raw = llm_mod.extract_da_from_body(
+                body, client=client,
+                return_raw=True,
+                **({"model": model} if model else {}),
             )
         except Exception as exc:  # noqa: BLE001
             log(f"      LLM 오류: {exc}")
             continue
+        # raw 응답 일부 기록 (디버그)
+        preview = (raw or "").replace("\n", " ")[:300]
+        log(f"      LLM 응답({len(raw)}자): {preview}")
         # year 이 정확히 일치하는 항목만 사용
+        matched = False
         for d in parsed or []:
             try:
                 y_val = int(d.get("year"))
@@ -168,6 +180,7 @@ def _fill_da_per_year(
             dep = d.get("dep") if isinstance(d.get("dep"), (int, float)) else None
             amort = d.get("amort") if isinstance(d.get("amort"), (int, float)) else None
             if dep is None and amort is None:
+                log(f"      ✗ {yf.year} 응답에 dep/amort 둘 다 null → skip")
                 continue
             yf.values["dep"] = dep
             yf.values["amort"] = amort
@@ -179,10 +192,18 @@ def _fill_da_per_year(
                 if rev:
                     yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
             filled += 1
-            log(f"      ✓ {yf.year} dep={dep} amort={amort} da={yf.values['da']}")
+            src_label = d.get("source", "?")
+            log(f"      ✓ {yf.year} dep={dep} amort={amort} "
+                f"da={yf.values['da']:,.0f} (source={src_label})")
+            matched = True
             break
+        if not matched:
+            years_in_resp = [d.get("year") for d in (parsed or [])]
+            log(f"      ✗ {yf.year} 응답에 해당 연도 없음 (응답 연도: {years_in_resp})")
     if filled:
         log(f"  → 연도별 재시도로 {filled}개년 추가 보강")
+    else:
+        log(f"  ⚠ 연도별 재시도 실패 — 모든 후보에서 D&A 추출 불가")
     return filled
 
 
@@ -226,16 +247,21 @@ def _fill_da_from_body(
         tag = " (정정본)" if src.get("_amended") else ""
         log(f"    [{idx}/{len(candidates)}] {src.get('report_nm','')}{tag} "
             f"({rcept_no})")
-        body_full = _d.fetch_body(rcept_no, cap=600000)
+        body_full = _d.fetch_body(rcept_no, cap=900000)
         if not body_full or len(body_full) < 1000:
             log(f"      본문 부족 → 다음 후보")
             continue
-        body = biz_mod.slice_da_relevant(body_full, cap=60000)
+        body = biz_mod.slice_da_relevant(body_full, cap=120000)
+        if len(body) < 5000:
+            body = body_full[:120000]   # slice 실패 시 앞부분 fallback
         log(f"      본문 {len(body_full):,}자 → D&A 관련 {len(body):,}자")
         try:
-            parsed = llm_mod.extract_da_from_body(
-                body, client=client, **({"model": model} if model else {}),
+            parsed, raw = llm_mod.extract_da_from_body(
+                body, client=client, return_raw=True,
+                **({"model": model} if model else {}),
             )
+            preview = (raw or "").replace("\n", " ")[:250]
+            log(f"      LLM 응답({len(raw)}자): {preview}")
         except Exception as exc:  # noqa: BLE001
             log(f"      LLM 오류: {exc}")
             continue

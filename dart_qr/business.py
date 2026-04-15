@@ -235,21 +235,29 @@ def slice_business_section(full_body: str, fallback_head: int = 60000) -> str:
     return section
 
 
-def slice_da_relevant(body: str, cap: int = 50000) -> str:
-    """D&A 가 등장할 만한 구간만 병합 슬라이싱.
+def slice_da_relevant(body: str, cap: int = 120000) -> str:
+    """D&A 관련 구간 병합 슬라이싱.
 
-      • 현금흐름표 / 영업활동으로인한현금흐름
-      • 감가상각비 / 무형자산상각비 / 상각비
-      • 비용의 성격별 분류 주석
+    우선순위:
+      1) 현금흐름표 본문 (간접법 조정 항목)
+      2) 현금흐름표 주석 / 유형자산·무형자산 주석
+      3) 비용의 성격별 분류 주석
 
-    각 마커 주변 앞 500 / 뒤 4000자 수집 후 겹치면 병합. cap 이하로 자름.
+    각 마커 주변 -500 / +5000자 수집 후 span 병합.
     """
     if not body:
         return ""
     markers = [
-        "현금흐름표", "현 금 흐 름 표",
+        # 1) 현금흐름표 본문
+        "현금흐름표", "현 금 흐 름 표", "Statement of Cash Flows",
         "영업활동으로인한현금흐름", "영업활동 현금흐름", "영업활동현금흐름",
-        "감가상각비", "무형자산상각비", "상각비용",
+        "영업활동으로부터의 현금흐름",
+        # 2) 현금흐름표 주석 + 유형자산/무형자산 주석
+        "현금흐름표에 대한 주석", "현금흐름표에대한주석",
+        "유형자산", "무형자산", "유 형 자 산", "무 형 자 산",
+        # 3) D&A 라인 단어
+        "감가상각비", "감가상각", "무형자산상각비", "상각비용", "상각비",
+        # 4) 비용 성격별 분류
         "비용의 성격별", "비용의성격별", "성격별 분류", "성격별분류",
         "유형자산 및 무형자산", "유형자산감가상각",
     ]
@@ -261,12 +269,11 @@ def slice_da_relevant(body: str, cap: int = 50000) -> str:
             if i < 0:
                 break
             a = max(0, i - 500)
-            b = min(len(body), i + 4000)
+            b = min(len(body), i + 5000)
             spans.append((a, b))
             idx = i + len(m)
     if not spans:
         return body[:cap]
-    # merge
     spans.sort()
     merged: List[tuple[int, int]] = []
     for s, e in spans:
