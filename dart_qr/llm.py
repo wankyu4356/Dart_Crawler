@@ -441,6 +441,75 @@ def extract_da_from_body(
         return []
 
 
+# ── 주석(Footnotes) 요약 — 감사보고서/사업보고서의 주요 주석 섹션 정리 ──
+FOOTNOTES_SYSTEM = """당신은 한국 PE 투자심사역입니다. 사업보고서 또는 감사보고서의
+**주석(Notes)** 섹션에서 PE 가 투자 판단 시 반드시 읽어야 할 **주요 주석**을
+카테고리별로 정리해 JSON 으로 반환합니다.
+
+엄격 규칙:
+1) 본문에 명시된 사실만 사용. 추정/일반론 금지.
+2) 금액은 원 단위 숫자(amount) 또는 원문 그대로(note) 기재.
+3) 없는 항목은 해당 배열을 빈 리스트로.
+4) 응답은 **JSON 객체만** (마크다운/주석/코드펜스 없이).
+
+스키마:
+{
+  "related_party_transactions": [
+    {"counterparty":"특수관계자명","relation":"지배/종속/관계 등",
+     "nature":"거래 성격 (매출/매입/차입 등)",
+     "amount":숫자|null, "note":"요약"}
+  ],
+  "contingent_liabilities": [
+    {"title":"우발부채 제목","amount":숫자|null,"note":"요약/진행상황"}
+  ],
+  "major_contracts": [
+    {"title":"중요 계약","counterparty":"상대","value":숫자|null,
+     "term":"계약기간","note":"요약"}
+  ],
+  "loans_and_borrowings": [
+    {"lender":"차입처","balance":숫자|null,"rate":"금리","maturity":"만기",
+     "collateral":"담보"}
+  ],
+  "subsequent_events": [
+    {"title":"보고기간 후 사건","note":"요약"}
+  ],
+  "other_key_footnotes": [
+    {"title":"기타 주요 주석","note":"요약"}
+  ]
+}"""
+
+
+def extract_footnotes_from_body(
+    body: str,
+    client=None,
+    model: str = ANTHROPIC_MODEL,
+    max_tokens: int = 3000,
+) -> dict:
+    """사업/감사보고서 본문 → 주요 주석 구조화 JSON. 실패 시 빈 dict."""
+    if not body:
+        return {}
+    client = client or get_client()
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": FOOTNOTES_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": f"주석 섹션 본문(발췌):\n\n{body}",
+            }],
+        )
+        raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
+        parsed = _parse_json(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def extract_business_overview(
     body: str,
     client=None,

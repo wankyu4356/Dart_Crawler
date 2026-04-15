@@ -1304,6 +1304,7 @@ def write_html(
     period_label: str,
     exec_summary: Optional[str] = None,
     business: Optional[dict] = None,
+    footnotes: Optional[dict] = None,
 ) -> None:
     cnt = SectionCounter()
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")

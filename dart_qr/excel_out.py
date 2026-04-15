@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .config import CONTACT_EMAIL, CONTACT_NAME
@@ -23,13 +23,36 @@ from .profile import Profile
 from .shareholders import ShareholderBundle, top_holder_summary
 
 
-HEADER_FONT = Font(bold=True, color="FFFFFF")
-HEADER_FILL = PatternFill("solid", fgColor="305496")
-SUBHEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
-RATIO_FILL = PatternFill("solid", fgColor="F3F6FB")   # 비율 행 옅은 음영
-RATIO_FONT = Font(italic=True, color="1F3864")
-LINK_FONT = Font(color="0563C1", underline="single")   # 하이퍼링크 스타일
+# ── IB 리포트 스타일 ────────────────────────────────────────────────
+HEADER_FONT = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+HEADER_FILL = PatternFill("solid", fgColor="1F3864")          # 딥블루
+SECTION_FILL = PatternFill("solid", fgColor="D9E1F2")         # 섹션 밴드
+SUBHEADER_FILL = PatternFill("solid", fgColor="D9E1F2")       # 호환
+RATIO_FILL = PatternFill("solid", fgColor="F3F6FB")           # 비율 행
+RATIO_FONT = Font(italic=True, color="1F3864", name="Calibri", size=11)
+SUBTOTAL_FILL = PatternFill("solid", fgColor="E7EEF7")
+SUBTOTAL_FONT = Font(bold=True, color="1F3864", name="Calibri", size=11)
+TOTAL_FILL = PatternFill("solid", fgColor="1F3864")
+TOTAL_FONT = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+CHECK_OK_FILL = PatternFill("solid", fgColor="E8F5E9")
+CHECK_FAIL_FILL = PatternFill("solid", fgColor="FFEBEE")
+NOTE_FONT = Font(italic=True, color="616161", name="Calibri", size=10)
+LINK_FONT = Font(color="0563C1", underline="single", name="Calibri", size=11)
+BODY_FONT = Font(name="Calibri", size=11)
+HEADER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
+RIGHT_ALIGN = Alignment(horizontal="right", vertical="center")
+LEFT_ALIGN = Alignment(horizontal="left", vertical="center", indent=0)
+INDENT_ALIGN = Alignment(horizontal="left", vertical="center", indent=1)
 WRAP = Alignment(wrap_text=True, vertical="top")
+
+# 얇은 border
+_THIN_SIDE = Side(style="thin", color="BDBDBD")
+_MEDIUM_SIDE = Side(style="medium", color="1F3864")
+THIN_BORDER = Border(left=_THIN_SIDE, right=_THIN_SIDE, top=_THIN_SIDE, bottom=_THIN_SIDE)
+HEADER_BORDER = Border(
+    left=_MEDIUM_SIDE, right=_MEDIUM_SIDE,
+    top=_MEDIUM_SIDE, bottom=_MEDIUM_SIDE,
+)
 
 
 def _apply_hyperlink(cell, url: str, display: str = None) -> None:
@@ -51,7 +74,9 @@ def _style_header(ws, row: int, ncols: int) -> None:
         cell = ws.cell(row=row, column=c)
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.alignment = HEADER_ALIGN
+        cell.border = HEADER_BORDER
+    ws.row_dimensions[row].height = 28
 
 
 def _autofit(ws, max_width: int = 50) -> None:
@@ -108,15 +133,38 @@ def _write_profile(ws, profile: Profile, period_label: str) -> None:
     _autofit(ws)
 
 
+def _ib_style_cell(cell, *, bold=False, fill=None, font=None, align=None,
+                    number_format=None, border=None):
+    if font is not None:
+        cell.font = font
+    elif bold:
+        cell.font = Font(bold=True, name="Calibri", size=11)
+    else:
+        cell.font = BODY_FONT
+    if fill is not None:
+        cell.fill = fill
+    if align is not None:
+        cell.alignment = align
+    if number_format is not None:
+        cell.number_format = number_format
+    if border is not None:
+        cell.border = border
+
+
 def _write_financials_sheet(wb: Workbook, sheet_name: str,
                              annual_list, latest_q) -> None:
-    from openpyxl.utils import get_column_letter
-
+    """IB 스타일 재무 시트.
+      • 섹션 밴드 (Performance / Balance Sheet / YoY)
+      • 라벨 들여쓰기 (최상위 합계 vs 구성항목)
+      • 주요 합계는 **수식**으로 (예: 매출총이익 = 매출액 - 매출원가)
+      • 시트 하단에 **검증 체커** (수식 합계 vs 원본 raw 값 일치 여부)
+    """
     if not annual_list and not latest_q:
         return
 
     ws = wb.create_sheet(sheet_name)
-    # 연도 헤더에 연결/별도 구분 (한국어) 표시
+    ws.sheet_view.showGridLines = False
+
     FS_KR = {"CFS": "연결", "OFS": "별도"}
     headers = ["계정"]
     for y in annual_list:
@@ -133,68 +181,146 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
     # key → 행번호 저장 (margin/YoY 수식에서 참조)
     row_of: Dict[str, int] = {}
 
-    # 마진 키 → (분자 key, 분모 key) 매핑. 모두 * 100.
+    # 마진 (% 수식) — 각 분자/분모 key 로부터 row 참조
     MARGIN_FORMULA = {
         "gpm":     ("gross_profit", "revenue"),
         "opm":     ("op_income",    "revenue"),
         "ebitdam": ("ebitda",       "revenue"),
         "npm":     ("net_income",   "revenue"),
     }
+    # 부분합 수식: 키 → (부호 포함 항목 리스트). 가능하면 Python 원값 대신
+    # 수식으로 저장해 raw 값 편집 시 자동 재계산.
+    SUBTOTAL_FORMULA = {
+        "gross_profit": [("+", "revenue"), ("-", "cost_of_sales")],
+        "op_income":    [("+", "gross_profit"), ("-", "sga")],
+        "da":           [("+", "dep"), ("+", "amort")],
+        "ebitda":       [("+", "op_income"), ("+", "da")],
+    }
+    # 시각적 강조 레벨: "header"=섹션 헤더, "total"=최상위 합계, "subtotal"=중간 합계,
+    # "item"=세부 항목(들여쓰기), "ratio"=비율.
+    LEVEL_MAP = {
+        # Performance
+        "revenue":        "total",
+        "cost_of_sales":  "item",
+        "gross_profit":   "subtotal",
+        "gpm":            "ratio",
+        "sga":            "item",
+        "op_income":      "subtotal",
+        "opm":            "ratio",
+        "dep":            "item",
+        "amort":          "item",
+        "da":             "subtotal",
+        "ebitda":         "subtotal",
+        "ebitdam":        "ratio",
+        "net_income":     "total",
+        "npm":            "ratio",
+        # BS
+        "total_assets":       "total",
+        "total_liabilities":  "subtotal",
+        "total_equity":       "subtotal",
+    }
+
+    def _append_section_band(title: str) -> None:
+        # 섹션 헤더: 옅은 파란색 밴드를 모든 컬럼에 걸쳐 표시
+        ws.append([title] + [None] * (n_cols - 1))
+        r = ws.max_row
+        for c in range(1, n_cols + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.font = SUBTOTAL_FONT
+            cell.fill = SECTION_FILL
+            cell.alignment = LEFT_ALIGN if c == 1 else RIGHT_ALIGN
+        ws.row_dimensions[r].height = 22
+        # 병합
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n_cols)
+
+    def _write_value_row(key: str, values_getter) -> None:
+        """한 행 렌더 — 라벨 + 각 열의 raw 값. values_getter(yearfin, key) → float|None"""
+        label = KEY_LABEL.get(key, key)
+        level = LEVEL_MAP.get(key, "item")
+        ws.append([label])
+        r = ws.max_row
+        row_of[key] = r
+
+        lbl_cell = ws.cell(row=r, column=1)
+        if level == "ratio":
+            lbl_cell.font = RATIO_FONT
+            lbl_cell.fill = RATIO_FILL
+            lbl_cell.alignment = INDENT_ALIGN
+        elif level == "total":
+            lbl_cell.font = TOTAL_FONT
+            lbl_cell.fill = TOTAL_FILL
+            lbl_cell.alignment = LEFT_ALIGN
+        elif level == "subtotal":
+            lbl_cell.font = SUBTOTAL_FONT
+            lbl_cell.fill = SUBTOTAL_FILL
+            lbl_cell.alignment = LEFT_ALIGN
+        else:  # item
+            lbl_cell.font = BODY_FONT
+            lbl_cell.alignment = INDENT_ALIGN
+
+        # 마진 수식
+        if key in MARGIN_FORMULA:
+            num_key, den_key = MARGIN_FORMULA[key]
+            num_r = row_of.get(num_key)
+            den_r = row_of.get(den_key)
+            for c in range(2, n_cols + 1):
+                cell = ws.cell(row=r, column=c)
+                if num_r and den_r:
+                    col = get_column_letter(c)
+                    cell.value = f'=IFERROR({col}{num_r}/{col}{den_r}*100,"")'
+                cell.number_format = PCT_FMT
+                cell.alignment = RIGHT_ALIGN
+                cell.font = RATIO_FONT
+                cell.fill = RATIO_FILL
+            return
+
+        # 부분합 수식 (분자/분모 row 들이 이미 있으면 수식, 없으면 raw)
+        use_formula = False
+        parts = SUBTOTAL_FORMULA.get(key)
+        if parts and all(row_of.get(k) is not None for _, k in parts):
+            use_formula = True
+
+        for c in range(2, n_cols + 1):
+            cell = ws.cell(row=r, column=c)
+            col = get_column_letter(c)
+            if use_formula:
+                formula_parts = []
+                for sign, k in parts:
+                    formula_parts.append(f"{sign}{col}{row_of[k]}")
+                cell.value = "=" + "".join(formula_parts).lstrip("+")
+            else:
+                # raw 값 가져오기 — yearfin 인덱스 매핑
+                idx = c - 2
+                if idx < len(annual_list):
+                    v = annual_list[idx].values.get(key)
+                elif latest_q and idx == len(annual_list):
+                    v = latest_q.values.get(key)
+                else:
+                    v = None
+                cell.value = v
+            cell.number_format = KRW_FMT
+            cell.alignment = RIGHT_ALIGN
+            # 합계 강조
+            if level == "total":
+                cell.font = TOTAL_FONT
+                cell.fill = TOTAL_FILL
+            elif level == "subtotal":
+                cell.font = SUBTOTAL_FONT
+                cell.fill = SUBTOTAL_FILL
 
     def _emit_block(title: str, keys: List[str]) -> None:
-        ws.append([title])
-        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="305496")
-        ws.cell(row=ws.max_row, column=1).fill = SUBHEADER_FILL
+        _append_section_band(title)
         for key in keys:
-            label = KEY_LABEL.get(key, key)
-            row: List[Any] = [label]
-            if key in MARGIN_FORMULA:
-                # 마진은 placeholder 로 append 후 행번호 기록 → 수식 채움
-                for _ in range(n_cols - 1):
-                    row.append(None)
-                ws.append(row)
-                row_of[key] = ws.max_row
-                r_idx = ws.max_row
-                # 라벨 셀도 이탤릭 + 음영
-                lbl_cell = ws.cell(row=r_idx, column=1)
-                lbl_cell.font = RATIO_FONT
-                lbl_cell.fill = RATIO_FILL
-                num_key, den_key = MARGIN_FORMULA[key]
-                num_r = row_of.get(num_key)
-                den_r = row_of.get(den_key)
-                for c in range(2, n_cols + 1):
-                    cell = ws.cell(row=r_idx, column=c)
-                    if num_r and den_r:
-                        col = get_column_letter(c)
-                        cell.value = f'=IFERROR({col}{num_r}/{col}{den_r}*100,"")'
-                    cell.number_format = PCT_FMT
-                    cell.alignment = Alignment(horizontal="right")
-                    cell.font = RATIO_FONT
-                    cell.fill = RATIO_FILL
-            else:
-                # 일반 raw 값
-                for y in annual_list:
-                    row.append(y.values.get(key))
-                if latest_q:
-                    row.append(latest_q.values.get(key))
-                ws.append(row)
-                row_of[key] = ws.max_row
-                for c in range(2, n_cols + 1):
-                    cell = ws.cell(row=ws.max_row, column=c)
-                    cell.number_format = KRW_FMT
-                    cell.alignment = Alignment(horizontal="right")
+            _write_value_row(key, None)
 
-    _emit_block("◆ Performance (손익)", PERFORMANCE_KEYS)
+    _emit_block("PERFORMANCE (손익)", PERFORMANCE_KEYS)
     ws.append([])
-    _emit_block("◆ Balance Sheet", BALANCE_KEYS)
+    _emit_block("BALANCE SHEET", BALANCE_KEYS)
 
     # YoY 영역 — 수식 기반: =(curr/prev - 1)*100
-    # annual 은 최신→과거 순. Excel 컬럼도 최신이 왼쪽(B), 과거가 오른쪽.
     if len(annual_list) >= 2:
         ws.append([])
-        ws.append(["◆ YoY 성장률 (매출/영업이익/순이익)"])
-        ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="305496")
-        ws.cell(row=ws.max_row, column=1).fill = SUBHEADER_FILL
+        _append_section_band("YoY 성장률 (매출 / 영업이익 / 순이익)")
 
         for key, label in [("revenue", "매출 YoY"),
                            ("op_income", "영업이익 YoY"),
@@ -202,23 +328,69 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
             src_row = row_of.get(key)
             ws.append([label] + [None] * (n_cols - 1))
             yoy_row_idx = ws.max_row
+            lbl = ws.cell(row=yoy_row_idx, column=1)
+            lbl.font = BODY_FONT
+            lbl.alignment = INDENT_ALIGN
             if src_row is None:
                 continue
-            # 각 annual 연도 i 에 대해 i+1 (전년) 대비 수식. 마지막 열(가장 과거)은 비교 불가.
             for i in range(len(annual_list)):
                 col_curr = get_column_letter(2 + i)
                 col_prev = get_column_letter(2 + i + 1)
                 if i + 1 >= len(annual_list):
-                    break  # 마지막 연도는 전년 없음 → 빈 셀
+                    break
                 cell = ws.cell(row=yoy_row_idx, column=2 + i)
                 cell.value = (
                     f'=IFERROR(({col_curr}{src_row}/{col_prev}{src_row}-1)*100,"")'
                 )
                 cell.number_format = PCT_FMT
-                cell.alignment = Alignment(horizontal="right")
-            # 나머지 셀 (마지막 연도 + 분기) 포맷만
+                cell.alignment = RIGHT_ALIGN
+                cell.font = BODY_FONT
             for c in range(2 + max(len(annual_list) - 1, 0), n_cols + 1):
                 ws.cell(row=yoy_row_idx, column=c).number_format = PCT_FMT
+
+    # ── 검증(Check) 행: 자산 = 부채 + 자본, 매출총이익 원본 vs 수식 일치 등
+    ws.append([])
+    _append_section_band("✓ 검증 (Check)")
+
+    def _append_check(label: str, formula_by_col):
+        ws.append([label] + [None] * (n_cols - 1))
+        r = ws.max_row
+        lbl = ws.cell(row=r, column=1)
+        lbl.font = Font(bold=True, color="2E7D32", name="Calibri", size=10)
+        lbl.alignment = INDENT_ALIGN
+        for c in range(2, n_cols + 1):
+            cell = ws.cell(row=r, column=c)
+            fx = formula_by_col(c)
+            if fx:
+                cell.value = fx
+            cell.alignment = RIGHT_ALIGN
+            cell.number_format = '"✓ OK";"✗ DIFF";"-"'
+            cell.font = Font(bold=True, name="Calibri", size=10)
+
+    # 자산 = 부채 + 자본 검증
+    r_assets = row_of.get("total_assets")
+    r_liab = row_of.get("total_liabilities")
+    r_eq = row_of.get("total_equity")
+    if r_assets and r_liab and r_eq:
+        def _bs_check(c):
+            col = get_column_letter(c)
+            return (f'=IF(ISNUMBER({col}{r_assets})*ISNUMBER({col}{r_liab})'
+                    f'*ISNUMBER({col}{r_eq}),'
+                    f'IF(ABS({col}{r_assets}-{col}{r_liab}-{col}{r_eq})'
+                    f'<=ABS({col}{r_assets})*0.001,1,-1),0)')
+        _append_check("자산 = 부채 + 자본", _bs_check)
+
+    # EBITDA = OP + D&A 검증 (둘 다 수식 셀이라 항상 일치해야)
+    r_ebitda = row_of.get("ebitda")
+    r_op = row_of.get("op_income")
+    r_da = row_of.get("da")
+    if r_ebitda and r_op and r_da:
+        def _ebitda_check(c):
+            col = get_column_letter(c)
+            return (f'=IF(ISNUMBER({col}{r_ebitda})*ISNUMBER({col}{r_op})'
+                    f'*ISNUMBER({col}{r_da}),'
+                    f'IF(ABS({col}{r_ebitda}-{col}{r_op}-{col}{r_da})<=1,1,-1),0)')
+        _append_check("EBITDA = 영업이익 + D&A", _ebitda_check)
 
     # 혼합 모드 각주
     ofs_years = [y.year for y in annual_list if y.fs_div == "OFS"]
@@ -228,9 +400,14 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
         note = (f"※ {', '.join(str(y) for y in ofs_years)}년은 별도기준 "
                 f"(연결감사보고서 미제출). 다른 연도는 연결기준과 비교에 유의.")
         ws.append([note])
-        ws.cell(row=ws.max_row, column=1).font = Font(italic=True, color="B71C1C")
+        ws.cell(row=ws.max_row, column=1).font = NOTE_FONT
 
-    _autofit(ws, max_width=28)
+    # 열 너비 고정 (라벨 넓게, 연도 일정)
+    ws.column_dimensions["A"].width = 32
+    for i in range(1, n_cols):
+        ws.column_dimensions[get_column_letter(1 + i)].width = 20
+    # 상단 Freeze: 헤더 행 + 라벨 열
+    ws.freeze_panes = "B2"
 
 
 def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
@@ -357,29 +534,125 @@ def _write_indicators(wb: Workbook, fin: FinancialsBundle) -> None:
     _autofit(ws, max_width=28)
 
 
-def _write_table(wb: Workbook, sheet_name: str, rows: List[Dict[str, Any]]) -> None:
+def _write_table(wb: Workbook, sheet_name: str, rows: List[Dict[str, Any]],
+                 header_map: Optional[Dict[str, str]] = None) -> None:
+    """IB 스타일 표: 헤더 딥블루 + zebra + 얇은 보더 + freeze 상단."""
     ws = wb.create_sheet(sheet_name)
+    ws.sheet_view.showGridLines = False
     if not rows:
-        ws.append(["(데이터 없음)"])
+        cell = ws.cell(row=1, column=1, value="(데이터 없음)")
+        cell.font = NOTE_FONT
         return
-    headers = list(rows[0].keys())
+    keys = list(rows[0].keys())
+    headers = [header_map.get(k, k) if header_map else k for k in keys]
     ws.append(headers)
     _style_header(ws, 1, len(headers))
+    # body
     for r in rows:
-        ws.append([r.get(h, "") for h in headers])
-    _autofit(ws, max_width=40)
+        ws.append([r.get(k, "") for k in keys])
+    # zebra + 얇은 보더 + 우측 정렬 숫자
+    for ridx in range(2, ws.max_row + 1):
+        fill = PatternFill("solid", fgColor="F7F9FC") if (ridx % 2 == 0) else None
+        for cidx in range(1, len(headers) + 1):
+            cell = ws.cell(row=ridx, column=cidx)
+            cell.font = BODY_FONT
+            cell.border = THIN_BORDER
+            if fill:
+                cell.fill = fill
+            # 숫자처럼 보이면 우측 정렬 + 콤마
+            v = cell.value
+            if isinstance(v, (int, float)):
+                cell.alignment = RIGHT_ALIGN
+                cell.number_format = KRW_FMT
+            else:
+                # 숫자 문자열도 한번 시도
+                if isinstance(v, str) and v.replace(",", "").replace(".", "").replace("-", "").isdigit():
+                    try:
+                        cell.value = float(v.replace(",", ""))
+                        cell.number_format = KRW_FMT
+                        cell.alignment = RIGHT_ALIGN
+                    except ValueError:
+                        cell.alignment = LEFT_ALIGN
+                else:
+                    cell.alignment = LEFT_ALIGN
+    ws.freeze_panes = "A2"
+    _autofit(ws, max_width=45)
 
 
 def _write_shareholders(wb: Workbook, sh: ShareholderBundle) -> None:
-    _write_table(wb, "주주_최대",       sh.major)
-    _write_table(wb, "주주_변동",       sh.major_change)
-    _write_table(wb, "주주_대량보유",   sh.major_stock)
-    _write_table(wb, "주주_임원소유",   sh.executive_stock)
-    _write_table(wb, "주주_소액",       sh.minority)
-    _write_table(wb, "임원",            sh.executives)
-    _write_table(wb, "배당",            sh.dividends)
-    _write_table(wb, "타법인출자",      sh.other_corp_invest)
-    _write_table(wb, "감사의견",        sh.audit_opinion)
+    # 한국어 헤더 매핑 — raw DART 필드명 대신 이해하기 쉬운 라벨로
+    major_hdr = {
+        "nm":"성명/법인명", "relate":"관계", "stock_knd":"주식종류",
+        "bsis_posesn_stock_co":"기초 보유수",
+        "bsis_posesn_stock_qota_rt":"기초 지분율(%)",
+        "trmend_posesn_stock_co":"기말 보유수",
+        "trmend_posesn_stock_qota_rt":"기말 지분율(%)",
+        "rm":"비고", "stlm_dt":"결산기준일",
+    }
+    chg_hdr = {
+        "change_on":"변동일", "mxmm_shrholdr_nm":"최대주주명",
+        "posesn_stock_co":"보유수", "qota_rt":"지분율(%)",
+        "change_cause":"변동사유", "rm":"비고", "stlm_dt":"결산기준일",
+    }
+    major_stock_hdr = {
+        "rcept_no":"접수번호", "rcept_dt":"접수일",
+        "report_tp":"보고구분", "repror":"대표보고자",
+        "stkqy":"보유주식수", "stkqy_irds":"증감",
+        "stkrt":"보유비율(%)", "stkrt_irds":"비율 증감(%)",
+        "report_resn":"사유",
+    }
+    exec_stock_hdr = {
+        "rcept_no":"접수번호", "rcept_dt":"접수일", "repror":"보고자",
+        "isu_exctv_rgist_at":"등기여부", "isu_exctv_ofcps":"직위",
+        "isu_main_shrholdr":"10% 이상 주주",
+        "sp_stock_lmp_cnt":"소유수", "sp_stock_lmp_irds_cnt":"증감",
+        "sp_stock_lmp_rate":"지분율(%)", "sp_stock_lmp_irds_rate":"증감율(%)",
+    }
+    minority_hdr = {
+        "se":"구분", "shrholdr_co":"주주수", "shrholdr_tot_co":"전체주주수",
+        "shrholdr_rate":"주주비율(%)",
+        "hold_stock_co":"보유주식수", "stock_tot_co":"총발행주식수",
+        "hold_stock_rate":"보유주식비율(%)", "stlm_dt":"결산기준일",
+    }
+    exec_hdr = {
+        "nm":"성명", "sexdstn":"성별", "birth_ym":"생년월",
+        "ofcps":"직위", "rgist_exctv_at":"등기여부", "fte_at":"상근여부",
+        "chrg_job":"담당업무", "main_career":"주요경력",
+        "mxmm_shrholdr_relate":"최대주주 관계",
+        "hffc_pd":"재직기간", "tenure_end_on":"임기만료일",
+    }
+    div_hdr = {
+        "se":"구분", "stock_knd":"주식종류",
+        "thstrm":"당기", "frmtrm":"전기", "lwfr":"전전기",
+        "stlm_dt":"결산기준일",
+    }
+    otr_hdr = {
+        "inv_prm":"법인명", "frst_acqs_de":"최초취득일",
+        "invstmnt_purps":"출자목적", "frst_acqs_amount":"최초취득금액",
+        "bsis_blce_qy":"기초 수량", "bsis_blce_qota_rt":"기초 지분(%)",
+        "bsis_blce_acntbk_amount":"기초 장부가",
+        "trmend_blce_qy":"기말 수량", "trmend_blce_qota_rt":"기말 지분(%)",
+        "trmend_blce_acntbk_amount":"기말 장부가",
+        "recent_bsns_year_fnnr_sttus_tot_assets":"자산총계",
+        "recent_bsns_year_fnnr_sttus_thstrm_ntpf":"당기순이익",
+        "stlm_dt":"결산기준일",
+    }
+    audit_hdr = {
+        "bsns_year":"사업연도", "adtor":"감사인",
+        "adt_opinion":"감사의견",
+        "adt_reprt_spcmnt_matter":"특기사항",
+        "emphs_matter":"강조사항", "core_adt_matter":"핵심감사사항",
+        "stlm_dt":"결산기준일",
+    }
+    _write_table(wb, "주주_최대",       sh.major,            major_hdr)
+    _write_table(wb, "주주_변동",       sh.major_change,     chg_hdr)
+    _write_table(wb, "주주_대량보유",   sh.major_stock,      major_stock_hdr)
+    _write_table(wb, "주주_임원소유",   sh.executive_stock,  exec_stock_hdr)
+    _write_table(wb, "주주_소액",       sh.minority,         minority_hdr)
+    _write_table(wb, "임원",            sh.executives,       exec_hdr)
+    _write_table(wb, "배당",            sh.dividends,        div_hdr)
+    _write_table(wb, "타법인출자",      sh.other_corp_invest, otr_hdr)
+    _write_table(wb, "감사의견",        sh.audit_opinion,    audit_hdr)
 
 
 def _write_disclosure_list(wb: Workbook, discs: List[Disclosure]) -> None:
@@ -522,6 +795,128 @@ def _write_business(wb: Workbook, biz: Optional[dict]) -> None:
     ws.column_dimensions["E"].width = 50
 
 
+def _write_footnotes(wb: Workbook, footnotes: Optional[dict]) -> None:
+    """주석(Footnotes) 시트 — 감사/사업보고서 주석에서 LLM 추출한 주요 항목."""
+    if not footnotes:
+        return
+    has_any = any(
+        footnotes.get(k) for k in (
+            "related_party_transactions", "contingent_liabilities",
+            "major_contracts", "loans_and_borrowings",
+            "subsequent_events", "other_key_footnotes",
+        )
+    )
+    if not has_any:
+        return
+
+    ws = wb.create_sheet("주석", 3)  # Profile·Exec·Biz 뒤 3번째에
+    ws.sheet_view.showGridLines = False
+
+    # 제목
+    ws["A1"] = "주요 주석 (Footnotes)"
+    ws["A1"].font = Font(bold=True, size=16, color="1F3864", name="Calibri")
+    ws.merge_cells("A1:E1")
+    src = footnotes.get("_source_report_nm") or ""
+    rcept = footnotes.get("_source_rcept_no") or ""
+    if src:
+        ws["A2"] = "기준 보고서:"
+        ws["A2"].font = NOTE_FONT
+        if rcept:
+            url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept}"
+            _apply_hyperlink(ws.cell(row=2, column=2), url, src)
+        else:
+            ws["B2"] = src
+            ws["B2"].font = NOTE_FONT
+        ws.merge_cells("B2:E2")
+
+    r = 4
+
+    def _section(title: str, items: list, columns: List[tuple[str, str, str]]):
+        """섹션 제목 + 컬럼 헤더 + 데이터 행. columns = [(key, header, fmt)]."""
+        nonlocal r
+        if not items:
+            return
+        # 섹션 헤더 배너
+        ws.cell(row=r, column=1, value=title)
+        for c in range(1, len(columns) + 2):
+            cell = ws.cell(row=r, column=c)
+            cell.font = SUBTOTAL_FONT
+            cell.fill = SECTION_FILL
+        ws.row_dimensions[r].height = 22
+        r += 1
+        # 컬럼 헤더
+        for ci, (_, hdr, _) in enumerate(columns, start=1):
+            cell = ws.cell(row=r, column=ci, value=hdr)
+            cell.font = HEADER_FONT
+            cell.fill = HEADER_FILL
+            cell.alignment = HEADER_ALIGN
+            cell.border = HEADER_BORDER
+        ws.row_dimensions[r].height = 24
+        r += 1
+        # 데이터
+        for i, it in enumerate(items):
+            for ci, (k, _, fmt) in enumerate(columns, start=1):
+                v = it.get(k) if isinstance(it, dict) else None
+                cell = ws.cell(row=r, column=ci, value=v)
+                cell.font = BODY_FONT
+                cell.border = THIN_BORDER
+                if fmt == "krw" and isinstance(v, (int, float)):
+                    cell.number_format = KRW_FMT
+                    cell.alignment = RIGHT_ALIGN
+                elif fmt == "wrap":
+                    cell.alignment = Alignment(wrap_text=True, vertical="top")
+                else:
+                    cell.alignment = LEFT_ALIGN
+                # zebra
+                if i % 2 == 1:
+                    cell.fill = PatternFill("solid", fgColor="F7F9FC")
+            # 주석/설명 열은 행 높이 유연
+            ws.row_dimensions[r].height = 34
+            r += 1
+        r += 1  # 섹션 간 여백
+
+    _section("특수관계자 거래",
+             footnotes.get("related_party_transactions") or [],
+             [("counterparty", "특수관계자", "text"),
+              ("relation", "관계", "text"),
+              ("nature", "거래 성격", "text"),
+              ("amount", "금액", "krw"),
+              ("note", "비고", "wrap")])
+    _section("우발부채 / 주요 소송",
+             footnotes.get("contingent_liabilities") or [],
+             [("title", "제목", "text"),
+              ("amount", "금액", "krw"),
+              ("note", "내용/진행상황", "wrap")])
+    _section("중요한 계약",
+             footnotes.get("major_contracts") or [],
+             [("title", "계약명", "text"),
+              ("counterparty", "상대방", "text"),
+              ("value", "계약금액", "krw"),
+              ("term", "기간", "text"),
+              ("note", "비고", "wrap")])
+    _section("차입금 / 사채",
+             footnotes.get("loans_and_borrowings") or [],
+             [("lender", "차입처", "text"),
+              ("balance", "잔액", "krw"),
+              ("rate", "이자율", "text"),
+              ("maturity", "만기", "text"),
+              ("collateral", "담보", "text")])
+    _section("보고기간 후 사건",
+             footnotes.get("subsequent_events") or [],
+             [("title", "제목", "text"),
+              ("note", "내용", "wrap")])
+    _section("기타 주요 주석",
+             footnotes.get("other_key_footnotes") or [],
+             [("title", "제목", "text"),
+              ("note", "내용", "wrap")])
+
+    # 컬럼 폭
+    widths = [22, 18, 18, 18, 60]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A4"
+
+
 # ── 최종 엔트리 ──────────────────────────────────────────────────────────
 def write_excel(
     path: str,
@@ -532,6 +927,7 @@ def write_excel(
     period_label: str,
     exec_summary: Optional[str] = None,
     business: Optional[dict] = None,
+    footnotes: Optional[dict] = None,
 ) -> None:
     wb = Workbook()
     _write_profile(wb.active, profile, period_label)
@@ -545,6 +941,7 @@ def write_excel(
         es.column_dimensions["A"].width = 100
 
     _write_business(wb, business)
+    _write_footnotes(wb, footnotes)
     _write_financials(wb, fin)
     _write_fin_detail(wb, fin)
     _write_indicators(wb, fin)

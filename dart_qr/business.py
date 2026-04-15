@@ -281,6 +281,86 @@ def slice_da_relevant(body: str, cap: int = 50000) -> str:
     return text
 
 
+def slice_footnotes_section(full_body: str, cap: int = 80000) -> str:
+    """본문에서 주석(Notes) 관련 구간 집중 슬라이싱.
+
+    키 주석 섹션의 전형적 제목들 주변 ±대량 컨텍스트 수집 후 merge.
+    """
+    if not full_body:
+        return ""
+    markers = [
+        "주석", "Notes",
+        "특수관계자", "관계회사 거래", "특수관계자와의 거래",
+        "우발부채", "우발채무", "지급보증", "계류 중인 소송",
+        "중요한 계약", "장기차입금", "사채", "회사채",
+        "리스", "이연법인세",
+        "보고기간 후 사건", "후속사건",
+    ]
+    spans: List[tuple[int, int]] = []
+    for m in markers:
+        idx = 0
+        while True:
+            i = full_body.find(m, idx)
+            if i < 0:
+                break
+            a = max(0, i - 300)
+            b = min(len(full_body), i + 6000)
+            spans.append((a, b))
+            idx = i + len(m)
+    if not spans:
+        return full_body[:cap]
+    spans.sort()
+    merged: List[tuple[int, int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    text = "\n---\n".join(full_body[s:e] for s, e in merged)
+    if len(text) > cap:
+        text = text[:cap] + "\n...[cap]"
+    return text
+
+
+def fetch_footnotes(
+    discs: List[Disclosure],
+    corp_code: str,
+    is_listed: bool,
+    client: Any = None,
+    model: Optional[str] = None,
+    log: LogFn = print,
+) -> Optional[Dict[str, Any]]:
+    """최신 사업/감사보고서에서 주요 주석 추출."""
+    candidates = pick_source_reports(discs, is_listed, corp_code, log=log, limit=3)
+    if not candidates:
+        log("  → 주석 추출할 보고서 없음")
+        return None
+
+    kwargs: Dict[str, Any] = {}
+    if model:
+        kwargs["model"] = model
+
+    for idx, src in enumerate(candidates, 1):
+        log(f"  [{idx}/{len(candidates)}] 보고서: {src.get('report_nm','')}")
+        body_full = fetch_body(src.get("rcept_no", ""), cap=400000)
+        if not body_full or len(body_full) < 1000:
+            log(f"    본문 부족 → 다음")
+            continue
+        section = slice_footnotes_section(body_full, cap=70000)
+        if len(section) < 1000:
+            log(f"    주석 섹션 부족 → 다음")
+            continue
+        log(f"    본문 {len(body_full):,}자 → 주석 {len(section):,}자 추출")
+        parsed = llm_mod.extract_footnotes_from_body(section, client=client, **kwargs)
+        if not parsed or not any(v for v in parsed.values() if isinstance(v, list)):
+            log(f"    LLM 결과 비어있음 → 다음")
+            continue
+        parsed["_source_report_nm"] = src.get("report_nm", "")
+        parsed["_source_rcept_no"]  = src.get("rcept_no", "")
+        return parsed
+    return None
+
+
 def fetch_business_profile(
     discs: List[Disclosure],
     corp_code: str,

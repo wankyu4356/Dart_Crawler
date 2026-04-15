@@ -257,6 +257,7 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
 
     # 6.5) Business Profile (LLM 가능할 때만)
     biz: Optional[dict] = None
+    footnotes: Optional[dict] = None
     if cfg.analyze_bodies and llm_client is not None:
         log(f"[7/8] 회사 개요(Business Profile) 추출")
         try:
@@ -271,6 +272,22 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
         except Exception as exc:  # noqa: BLE001
             log(f"  ⚠ Business Profile 오류: {exc}")
             biz = None
+
+        log(f"  주요 주석(Footnotes) 추출")
+        try:
+            footnotes = biz_mod.fetch_footnotes(
+                discs=discs, corp_code=c.corp_code, is_listed=is_listed,
+                client=llm_client, model=model_name, log=log,
+            )
+            if footnotes:
+                n_items = sum(
+                    len(v) for k, v in footnotes.items()
+                    if not k.startswith("_") and isinstance(v, list)
+                )
+                log(f"  → 주요 주석 {n_items}건 추출")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ⚠ Footnotes 오류: {exc}")
+            footnotes = None
 
     # 6.7) D&A LLM fallback — fnlttSinglAcntAll 에서 못 잡은 연도를 본문에서 추출
     if cfg.analyze_bodies and llm_client is not None and fin.annual:
@@ -288,9 +305,9 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     xlsx_path = os.path.join(cfg.output_dir, base + ".xlsx")
     html_path = os.path.join(cfg.output_dir, base + ".html")
     write_excel(xlsx_path, profile, fin, sh, discs, period_label,
-                exec_summary=exec_summary, business=biz)
+                exec_summary=exec_summary, business=biz, footnotes=footnotes)
     write_html(html_path, profile, fin, sh, discs, period_label,
-               exec_summary=exec_summary, business=biz)
+               exec_summary=exec_summary, business=biz, footnotes=footnotes)
     log(f"  ✓ Excel:  {xlsx_path}")
     log(f"  ✓ HTML:  {html_path}")
 
