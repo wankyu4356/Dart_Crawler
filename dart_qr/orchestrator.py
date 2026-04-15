@@ -48,6 +48,78 @@ class RunResult:
     n_analyzed: int
 
 
+def _fill_da_from_body(
+    fin, discs, corp_code: str, is_listed: bool,
+    client, model: Optional[str], log: LogFn,
+) -> None:
+    """API 로 D&A 를 못 잡은 연도를 최후의 LLM 본문 파싱으로 채움.
+
+    감사보고서/사업보고서 1건의 본문을 Claude 에 던져 [{year, dep, amort}]
+    배열로 추출. 해당 연도의 YearFin.values 에 주입 + EBITDA 파생 재계산.
+    """
+    missing_years = [
+        y.year for y in fin.annual
+        if y.values.get("da") is None
+    ]
+    if not missing_years:
+        return
+    log(f"  D&A 보강: {len(missing_years)}개 연도 누락 "
+        f"({', '.join(str(y) for y in missing_years)}) → 본문 LLM 추출 시도")
+
+    src = biz_mod.pick_source_report(discs, is_listed, corp_code, log=log)
+    if src is None:
+        log(f"    보고서 없음 → D&A 보강 skip")
+        return
+    rcept_no = src.get("rcept_no")
+    if not rcept_no:
+        return
+    from . import disclosures as _d
+    body = _d.fetch_body(rcept_no, cap=80000)
+    if not body:
+        log(f"    본문 비어있음 → D&A 보강 skip")
+        return
+    log(f"    본문 {len(body):,}자 → Claude D&A 추출")
+    try:
+        parsed = llm_mod.extract_da_from_body(
+            body, client=client, **({"model": model} if model else {}),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log(f"    LLM 오류: {exc}")
+        return
+    by_year = {}
+    for d in parsed or []:
+        y = d.get("year")
+        try:
+            y = int(y)
+        except (TypeError, ValueError):
+            continue
+        by_year[y] = d
+
+    filled = 0
+    for yf in fin.annual:
+        if yf.values.get("da") is not None:
+            continue
+        d = by_year.get(yf.year)
+        if not d:
+            continue
+        dep = d.get("dep") if isinstance(d.get("dep"), (int, float)) else None
+        amort = d.get("amort") if isinstance(d.get("amort"), (int, float)) else None
+        if dep is None and amort is None:
+            continue
+        yf.values["dep"] = dep
+        yf.values["amort"] = amort
+        yf.values["da"] = (dep or 0.0) + (amort or 0.0)
+        # EBITDA / EBITDAM 재파생
+        op = yf.values.get("op_income")
+        if op is not None:
+            yf.values["ebitda"] = op + yf.values["da"]
+            rev = yf.values.get("revenue")
+            if rev:
+                yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+        filled += 1
+    log(f"    → D&A {filled}개년 보강 완료")
+
+
 def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     # 1) 회사 식별
     log(f"[1/7] 회사 조회: {cfg.company}")
@@ -176,6 +248,13 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
         except Exception as exc:  # noqa: BLE001
             log(f"  ⚠ Business Profile 오류: {exc}")
             biz = None
+
+    # 6.7) D&A LLM fallback — fnlttSinglAcntAll 에서 못 잡은 연도를 본문에서 추출
+    if cfg.analyze_bodies and llm_client is not None and fin.annual:
+        _fill_da_from_body(
+            fin=fin, discs=discs, corp_code=c.corp_code,
+            is_listed=is_listed, client=llm_client, model=model_name, log=log,
+        )
 
     # 7) 파일 저장
     log(f"[8/8] 리포트 저장")

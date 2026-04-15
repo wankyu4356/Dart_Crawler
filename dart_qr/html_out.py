@@ -652,6 +652,20 @@ def _financials_section(
     if fin.annual and fin.annual[0].fs_div:
         fs_hint = f'<span class="hint">기준: {fin.annual[0].fs_div} (연결 우선)</span>'
 
+    # 혼합 모드 각주: 일부 연도가 다른 기준(CFS/OFS) 이면 각주 표시
+    fs_values = {y.fs_div for y in fin.annual if y.fs_div}
+    ofs_years = [y.year for y in fin.annual if y.fs_div == "OFS"]
+    cfs_years = [y.year for y in fin.annual if y.fs_div == "CFS"]
+    mixed_note = ""
+    if len(fs_values) > 1 and ofs_years and cfs_years:
+        mixed_note = (
+            f'<p class="muted small" style="margin-top:8px;">'
+            f'※ <b>{", ".join(str(y) for y in ofs_years)}</b>년 재무는 '
+            f'<b>별도</b>기준 (연결감사보고서 미제출).'
+            f' 다른 연도는 <b>연결</b>기준과 비교에 유의.'
+            f'</p>'
+        )
+
     # 동적 단위: chart_payload 에서 꺼내오거나 기본값
     cp = chart_payload or {}
     perf_unit = (cp.get("performance") or {}).get("unit", "억원")
@@ -678,6 +692,7 @@ def _financials_section(
 
   <h3>상세 재무 표</h3>
   {_fin_table(fin)}
+  {mixed_note}
 </section>
 """
 

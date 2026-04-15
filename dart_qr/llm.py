@@ -356,6 +356,58 @@ BUSINESS_SYSTEM = """당신은 PE 투자심사역입니다. 한국 기업의 사
 }"""
 
 
+# ── D&A 전용 추출 (최후 fallback) ──────────────────────────────────────
+DA_SYSTEM = """당신은 회계 전문가입니다. 한국 기업의 감사보고서/사업보고서
+본문에서 **연도별 감가상각비(Depreciation)와 무형자산상각비(Amortisation)**
+를 JSON 배열로 추출합니다.
+
+규칙:
+1) 본문에 명시된 사실만. 추정 금지.
+2) 숫자는 원 단위로 환산 (본문이 백만원이면 ×1,000,000).
+3) **사용권자산 감가상각비/리스자산 상각비는 제외** (전통적 D&A 와 분리).
+4) 있는 연도만 반환, 없으면 null.
+5) 응답은 **JSON 배열만** (마크다운/주석 금지).
+
+스키마:
+[{"year": 2024, "dep": 숫자|null, "amort": 숫자|null}, ...]
+
+※ 유형자산 감가상각비(dep) + 무형자산 상각비(amort). 합계 라인("감가상각
+및 무형자산상각비")만 있으면 dep 에 넣고 amort 는 null."""
+
+
+def extract_da_from_body(
+    body: str,
+    client=None,
+    model: str = ANTHROPIC_MODEL,
+    max_tokens: int = 1200,
+) -> list:
+    """본문 텍스트 → [{year, dep, amort}, ...]. 실패 시 빈 리스트."""
+    if not body:
+        return []
+    client = client or get_client()
+    try:
+        resp = client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=[{
+                "type": "text",
+                "text": DA_SYSTEM,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{
+                "role": "user",
+                "content": f"본문(발췌):\n\n{body}",
+            }],
+        )
+        raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
+        parsed = _parse_json_array(raw)
+        if not isinstance(parsed, list):
+            return []
+        return parsed
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def extract_business_overview(
     body: str,
     client=None,

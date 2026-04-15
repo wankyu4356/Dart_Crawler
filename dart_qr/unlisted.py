@@ -100,14 +100,15 @@ def fetch_financials(
 
     log(f"  → 표준 API 응답 부족 ({len(std.annual)}년). 감사보고서 파싱으로 보강")
     prefetched = ar.disclosures_to_rows(disclosures) if disclosures else None
-    # 가장 최신 감사보고서 1건만. 당기/전기/전전기 비교재무가 한 보고서에 모두 포함됨.
+    # 한 감사보고서가 당기/전기/전전기 3년 비교재무 포함.
+    # years_back=3 → 1건, years_back=5 → 2건, years_back=7 → 3건...
+    needed = max(1, (years_back + 2) // 3)
     reports = ar.find_latest_audit_reports(
-        corp_code, n=1, prefetched_rows=prefetched, log=log,
+        corp_code, n=needed, prefetched_rows=prefetched, log=log,
     )
-    # 수집된 범위에서 못 찾으면 6년치 재조회
     if not reports and prefetched is not None:
         log(f"    기수집 범위에 감사보고서 없음. DART 6년치 재조회")
-        reports = ar.find_latest_audit_reports(corp_code, n=1, log=log)
+        reports = ar.find_latest_audit_reports(corp_code, n=needed, log=log)
     if not reports:
         log(f"  → 감사보고서 없음. 표준 결과 그대로 반환")
         return std
@@ -117,7 +118,8 @@ def fetch_financials(
         rcept_no = r.get("rcept_no") or ""
         if not rcept_no:
             continue
-        log(f"    감사보고서 다운로드: {rcept_no} ({r.get('report_nm','')})")
+        mode = r.get("_fin_mode", "CFS")
+        log(f"    감사보고서({mode}) 다운로드: {rcept_no} ({r.get('report_nm','')})")
         body = ar.fetch_audit_body(rcept_no)
         if not body:
             log(f"    본문 비어있음. 스킵")
@@ -132,8 +134,11 @@ def fetch_financials(
             yf = _yearfin_from_llm(d)
             if yf is None:
                 continue
+            # fs_div 는 LLM 답변 우선, 없으면 보고서 모드로 주입
+            if not yf.fs_div or yf.fs_div not in ("CFS", "OFS"):
+                yf.fs_div = mode
             if yf.year in merged_by_year:
-                continue  # 이미 표준 API/이전 보고서에서 확보
+                continue
             merged_by_year[yf.year] = yf
 
     annual = sorted(merged_by_year.values(), key=lambda y: y.year, reverse=True)[:years_back]

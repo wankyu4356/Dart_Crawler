@@ -10,11 +10,23 @@
   • `fetch_audit_body(rcept_no, cap)` — document.xml ZIP → 본문 텍스트 (cap)
 """
 from __future__ import annotations
+import re
 from datetime import date, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from . import dart_api as api
 from .disclosures import fetch_body
+
+
+def _fiscal_year(row: Dict[str, Any]) -> str:
+    """감사보고서 report_nm 에서 결산 연도 추출. "감사보고서 (2024.12)" → "2024".
+    못 찾으면 접수일 앞 4자리."""
+    nm = row.get("report_nm") or ""
+    m = re.search(r"\((\d{4})[.\-/年]?\s*\d{1,2}", nm)
+    if m:
+        return m.group(1)
+    s = str(row.get("rcept_dt") or "").replace("-", "")
+    return s[:4] if len(s) >= 4 else ""
 
 
 def find_latest_audit_reports(
@@ -55,36 +67,73 @@ def find_latest_audit_reports(
     if log:
         log(f"    → 감사보고서 후보 {len(hits)}건")
 
-    # ─── 연결/별도 일관성: 연결이 하나라도 있으면 연결만 사용, 없으면 별도만 ───
-    # 같은 회사가 연도마다 연결/별도를 섞어 제출한 경우 재무가 들쭉날쭉해지는
-    # 문제를 방지. 감사보고서 1건에 당기/전기/전전기 3년 비교재무가 이미
-    # 포함되므로 최신 1건만 있어도 충분하다.
-    has_consol = any("연결" in (r.get("report_nm") or "") for r in hits)
-    if has_consol:
-        hits = [r for r in hits if "연결" in (r.get("report_nm") or "")]
-        mode = "연결"
-    else:
-        hits = [r for r in hits if "연결" not in (r.get("report_nm") or "")]
-        mode = "별도"
-    if log:
-        log(f"    → '{mode}' 모드로 통일 ({len(hits)}건)")
+    # ─── 선택 전략 (연결/별도 혼합 모드 지원) ─────────────────────────
+    #   • 연결 ≥ n → 연결만 (일관성 유지)
+    #   • 연결 부족 → 연결 + 누락된 결산연도는 별도감사로 보강
+    #   • 연결 0 → 별도만
+    # 각 항목에 _fin_mode: "CFS"/"OFS" 메타 부착.
+    def _rcept_num(r):
+        return int(str(r.get("rcept_dt") or "0").replace("-", "") or "0")
 
-    # 접수일 최신순
-    def _rank(r: Dict[str, Any]) -> tuple:
-        return (-int(str(r.get("rcept_dt") or "0").replace("-", "") or "0"),)
-    hits.sort(key=_rank)
+    consol_hits   = [r for r in hits if "연결" in (r.get("report_nm") or "")]
+    separate_hits = [r for r in hits if "연결" not in (r.get("report_nm") or "")]
+    consol_hits.sort(key=_rcept_num, reverse=True)
+    separate_hits.sort(key=_rcept_num, reverse=True)
 
-    # 연도별 중복 제거 (같은 접수연도 안에 여러 건이면 최신 1개만)
-    seen_years: set[str] = set()
+    def _dedup_by_fy(rows):
+        seen: set[str] = set()
+        out = []
+        for r in rows:
+            fy = _fiscal_year(r)
+            if fy in seen:
+                continue
+            seen.add(fy)
+            out.append(r)
+        return out
+
+    consol_hits   = _dedup_by_fy(consol_hits)
+    separate_hits = _dedup_by_fy(separate_hits)
+
     out: List[Dict[str, Any]] = []
-    for h in hits:
-        y = (str(h.get("rcept_dt") or "").replace("-", ""))[:4]
-        if y in seen_years:
-            continue
-        seen_years.add(y)
-        out.append(h)
-        if len(out) >= n:
-            break
+    taken_fy: set[str] = set()
+
+    if len(consol_hits) >= n:
+        for r in consol_hits[:n]:
+            rr = dict(r)
+            rr["_fin_mode"] = "CFS"
+            out.append(rr)
+            taken_fy.add(_fiscal_year(rr))
+        if log:
+            log(f"    → 연결 {len(out)}건 선택")
+    else:
+        for r in consol_hits:
+            if len(out) >= n:
+                break
+            rr = dict(r)
+            rr["_fin_mode"] = "CFS"
+            out.append(rr)
+            taken_fy.add(_fiscal_year(rr))
+        for r in separate_hits:
+            if len(out) >= n:
+                break
+            fy = _fiscal_year(r)
+            if fy in taken_fy:
+                continue
+            rr = dict(r)
+            rr["_fin_mode"] = "OFS"
+            out.append(rr)
+            taken_fy.add(fy)
+        if log:
+            n_cfs = sum(1 for r in out if r.get("_fin_mode") == "CFS")
+            n_ofs = sum(1 for r in out if r.get("_fin_mode") == "OFS")
+            if n_cfs and n_ofs:
+                log(f"    → 연결 {n_cfs} + 별도 {n_ofs}건 (혼합 모드, 누락 연도 별도로 보강)")
+            elif n_cfs:
+                log(f"    → 연결 {n_cfs}건 선택")
+            else:
+                log(f"    → 별도 {n_ofs}건 선택")
+
+    out.sort(key=_rcept_num, reverse=True)
     return out
 
 

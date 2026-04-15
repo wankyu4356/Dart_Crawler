@@ -102,10 +102,15 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
     from openpyxl.utils import get_column_letter
 
     ws = wb.create_sheet("재무")
-    headers = ["계정"] + [f"{y.year} ({y.reprt_label})" for y in fin.annual]
+    # 연도 헤더에 CFS/OFS 구분 표시 (혼합 모드 대응)
+    headers = ["계정"]
+    for y in fin.annual:
+        tag = f" · {y.fs_div}" if y.fs_div in ("CFS", "OFS") else ""
+        headers.append(f"{y.year} ({y.reprt_label}{tag})")
     if fin.latest_quarter:
         q = fin.latest_quarter
-        headers.append(f"{q.year} {q.reprt_label}")
+        tag = f" · {q.fs_div}" if q.fs_div in ("CFS", "OFS") else ""
+        headers.append(f"{q.year} {q.reprt_label}{tag}")
     ws.append(headers)
     _style_header(ws, 1, len(headers))
     n_cols = len(headers)
@@ -199,6 +204,16 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
             # 나머지 셀 (마지막 연도 + 분기) 포맷만
             for c in range(2 + max(len(fin.annual) - 1, 0), n_cols + 1):
                 ws.cell(row=yoy_row_idx, column=c).number_format = PCT_FMT
+
+    # 혼합 모드 각주
+    ofs_years = [y.year for y in fin.annual if y.fs_div == "OFS"]
+    cfs_years = [y.year for y in fin.annual if y.fs_div == "CFS"]
+    if ofs_years and cfs_years:
+        ws.append([])
+        note = (f"※ {', '.join(str(y) for y in ofs_years)}년은 별도기준 "
+                f"(연결감사보고서 미제출). 다른 연도는 연결기준과 비교에 유의.")
+        ws.append([note])
+        ws.cell(row=ws.max_row, column=1).font = Font(italic=True, color="B71C1C")
 
     _autofit(ws, max_width=28)
 
