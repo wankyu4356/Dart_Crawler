@@ -156,6 +156,9 @@ class FinancialsBundle:
     annual: List[YearFin] = field(default_factory=list)
     latest_quarter: Optional[YearFin] = None
     indicators: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # fnlttSinglAcntAll 응답 raw rows — Excel 상세 시트용 (계정별 전체 시계열)
+    # 각 row 에 `_call_year`, `_reprt_label` 메타 필드 부여
+    raw_rows: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ── 파싱 / 추출 ──────────────────────────────────────────────────────────
@@ -327,6 +330,7 @@ def fetch_annual_financials(
     corp_code: str,
     years_back: int = 4,
     ref_year: Optional[int] = None,
+    raw_out: Optional[List[Dict[str, Any]]] = None,
 ) -> List[YearFin]:
     if ref_year is None:
         ref_year = date.today().year
@@ -339,6 +343,14 @@ def fetch_annual_financials(
         if not rows:
             continue
         currency = next((r.get("currency") for r in rows if r.get("currency")), "KRW")
+        # raw 수집 (Excel 상세 시트용)
+        if raw_out is not None:
+            for r in rows:
+                rr = dict(r)
+                rr["_call_year"] = y
+                rr["_reprt_label"] = "사업보고서"
+                rr["_fs_div"] = fs_used
+                raw_out.append(rr)
         for period, year_offset in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
             yr = y - year_offset
             if yr in seen:
@@ -368,6 +380,7 @@ QUARTER_PRIORITY = [
 def fetch_latest_quarterly(
     corp_code: str,
     ref_year: Optional[int] = None,
+    raw_out: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[YearFin]:
     if ref_year is None:
         ref_year = date.today().year
@@ -376,6 +389,14 @@ def fetch_latest_quarterly(
             rows, fs_used = _fetch_full_with_fallback(corp_code, str(y), REPRT_CODE[key])
             if not rows:
                 continue
+            # raw 수집
+            if raw_out is not None:
+                for r in rows:
+                    rr = dict(r)
+                    rr["_call_year"] = y
+                    rr["_reprt_label"] = label
+                    rr["_fs_div"] = fs_used
+                    raw_out.append(rr)
             vals = _extract_year_values(rows, "thstrm")
             if any(v is not None for v in vals.values()):
                 currency = next((r.get("currency") for r in rows if r.get("currency")), "KRW")
@@ -414,8 +435,13 @@ def fetch_all(
     years_back: int = 4,
     ref_year: Optional[int] = None,
 ) -> FinancialsBundle:
-    annual = fetch_annual_financials(corp_code, years_back=years_back, ref_year=ref_year)
-    latest_q = fetch_latest_quarterly(corp_code, ref_year=ref_year)
+    raw_rows: List[Dict[str, Any]] = []
+    annual = fetch_annual_financials(
+        corp_code, years_back=years_back, ref_year=ref_year, raw_out=raw_rows,
+    )
+    latest_q = fetch_latest_quarterly(
+        corp_code, ref_year=ref_year, raw_out=raw_rows,
+    )
 
     indicators: Dict[str, Dict[str, Any]] = {}
     if annual:
@@ -428,7 +454,10 @@ def fetch_all(
         if ind:
             indicators[f"{latest_q.year} {latest_q.reprt_label}"] = ind
 
-    return FinancialsBundle(annual=annual, latest_quarter=latest_q, indicators=indicators)
+    return FinancialsBundle(
+        annual=annual, latest_quarter=latest_q,
+        indicators=indicators, raw_rows=raw_rows,
+    )
 
 
 # ── 포맷 헬퍼 ────────────────────────────────────────────────────────────

@@ -17,7 +17,7 @@ from .config import CONTACT_EMAIL, CONTACT_NAME
 from .disclosures import Disclosure
 from .financials import (
     BALANCE_KEYS, FinancialsBundle, KEY_LABEL, PCT_KEYS, PERFORMANCE_KEYS,
-    format_value, yoy,
+    _to_num, format_value, yoy,
 )
 from .profile import Profile
 from .shareholders import ShareholderBundle, top_holder_summary
@@ -201,6 +201,102 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
                 ws.cell(row=yoy_row_idx, column=c).number_format = PCT_FMT
 
     _autofit(ws, max_width=28)
+
+
+SJ_ORDER = ["BS", "IS", "CIS", "CF", "SCE"]
+SJ_LABEL = {
+    "BS":  "재무상태표",
+    "IS":  "손익계산서",
+    "CIS": "포괄손익계산서",
+    "CF":  "현금흐름표",
+    "SCE": "자본변동표",
+}
+
+
+def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
+    """fnlttSinglAcntAll 의 raw rows 를 계정별 시계열로 피벗해 한 시트에 기록."""
+    if not fin.raw_rows:
+        return
+
+    # 피벗: (sj_div, account_id, account_nm, ord) -> {year: amount}
+    pivot: Dict[tuple, Dict[int, float]] = {}
+    meta: Dict[tuple, Dict[str, str]] = {}      # account_detail / currency / sj_nm
+    years_seen: set = set()
+
+    for r in fin.raw_rows:
+        sj = (r.get("sj_div") or "").upper()
+        aid = (r.get("account_id") or "").strip()
+        anm = (r.get("account_nm") or "").strip()
+        ord_s = r.get("ord") or "99999"
+        try:
+            ordn = int(str(ord_s).replace(",", ""))
+        except ValueError:
+            ordn = 99999
+        call_year = r.get("_call_year")
+        if not isinstance(call_year, int):
+            continue
+        key = (sj, aid, anm, ordn)
+        meta.setdefault(key, {
+            "sj_nm":          r.get("sj_nm", ""),
+            "account_detail": r.get("account_detail", ""),
+            "currency":       r.get("currency", ""),
+        })
+        for period, yoff in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
+            year = call_year - yoff
+            amt = _to_num(r.get(f"{period}_amount"))
+            if amt is None:
+                continue
+            pivot.setdefault(key, {}).setdefault(year, amt)
+            years_seen.add(year)
+
+    if not years_seen:
+        return
+    years = sorted(years_seen, reverse=True)   # 최신 → 과거
+
+    ws = wb.create_sheet("재무제표_상세")
+    headers = ["구분", "계정ID", "계정명", "계정상세", *[f"{y}" for y in years], "통화"]
+    ws.append(headers)
+    _style_header(ws, 1, len(headers))
+
+    for sj in SJ_ORDER:
+        sj_keys = sorted([k for k in pivot if k[0] == sj], key=lambda k: k[3])
+        if not sj_keys:
+            continue
+        # 섹션 헤더 행
+        ws.append([SJ_LABEL.get(sj, sj)])
+        ridx = ws.max_row
+        for c in range(1, len(headers) + 1):
+            cell = ws.cell(row=ridx, column=c)
+            cell.font = Font(bold=True, color="305496")
+            cell.fill = SUBHEADER_FILL
+
+        for key in sj_keys:
+            sj_, aid, anm, ordn = key
+            m = meta.get(key, {})
+            row_vals: List[Any] = [
+                SJ_LABEL.get(sj_, sj_), aid, anm, m.get("account_detail", ""),
+            ]
+            for y in years:
+                v = pivot[key].get(y)
+                row_vals.append(v)
+            row_vals.append(m.get("currency", ""))
+            ws.append(row_vals)
+            r_idx = ws.max_row
+            # 연도 컬럼 포맷
+            for c in range(5, 5 + len(years)):
+                cell = ws.cell(row=r_idx, column=c)
+                cell.number_format = KRW_FMT
+                cell.alignment = Alignment(horizontal="right")
+
+    # 상단 고정 + 열 너비
+    ws.freeze_panes = "E2"
+    ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 36
+    ws.column_dimensions["C"].width = 32
+    ws.column_dimensions["D"].width = 22
+    for i in range(len(years)):
+        ws.column_dimensions[get_column_letter(5 + i)].width = 18
+    ws.column_dimensions[get_column_letter(5 + len(years))].width = 8
 
 
 def _write_indicators(wb: Workbook, fin: FinancialsBundle) -> None:
@@ -393,6 +489,7 @@ def write_excel(
 
     _write_business(wb, business)
     _write_financials(wb, fin)
+    _write_fin_detail(wb, fin)
     _write_indicators(wb, fin)
     _write_shareholders(wb, shareholders)
     _write_disclosure_list(wb, disclosures)

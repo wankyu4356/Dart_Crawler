@@ -139,7 +139,7 @@ class App(tk.Tk):
         hero.pack(fill="x")
         ttk.Label(hero, text="완규의 딸깍공장",
                   style="Hero.TLabel").pack(anchor="w")
-        ttk.Label(hero, text="DART 공시 자동 분석 · PE Quick Due-Diligence",
+        ttk.Label(hero, text="DART 공시 자동 분석 · 클릭 한 번으로 기업 리포트",
                   style="HeroSub.TLabel").pack(anchor="w", pady=(2, 8))
         ttk.Label(hero, text=f"v{__version__}  ·  문의: {cfgmod.CONTACT_EMAIL}",
                   style="HeroPill.TLabel").pack(anchor="w")
