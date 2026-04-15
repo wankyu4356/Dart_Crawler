@@ -76,7 +76,10 @@ jobs:
       - name: Build .exe
         shell: bash
         run: |
-          pyinstaller --onefile --windowed --clean \
+          # --noupx: UPX 압축을 끄면 Windows Defender/백신이 DLL 을 오탐해
+          #          "Failed to load Python DLL" 다이얼로그를 띄우는 케이스를 크게 줄임.
+          # --collect-all anthropic: SDK 내부 리소스 누락 방지.
+          pyinstaller --onefile --windowed --clean --noupx \
             --name DART_QuickReport \
             --collect-all anthropic \
             --hidden-import=openpyxl \

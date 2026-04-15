@@ -102,27 +102,34 @@ def _download(url: str, dest: str, log: Callable[[str], None]) -> bool:
 
 
 # ── self-replace 배치 ─────────────────────────────────────────────────
+# NOTE: "Failed to load Python DLL _MEIxxxxx\python311.dll" 방지:
+#   - 이전 프로세스가 _MEI 임시폴더를 해제할 시간을 충분히 준다 (5s).
+#   - taskkill 로 확실히 종료시킨 뒤 교체 시도.
+#   - 교체 후에도 OS 의 DLL 캐시 안정화를 위해 약간 대기 후 재시작.
 _REPLACE_BAT = r"""@echo off
 setlocal enabledelayedexpansion
 set "TARGET={target}"
 set "NEWFILE={newfile}"
 
-rem 기존 프로세스가 종료될 때까지 잠시 대기
-timeout /t 2 /nobreak >nul
+rem 혹시 남아있을 수 있는 기존 프로세스 강제 종료 (MEI 잠금 해제)
+taskkill /F /IM "DART_QuickReport.exe" >nul 2>&1
+timeout /t 5 /nobreak >nul
 
 set /a tries=0
 :wait_unlock
 del "%TARGET%" >nul 2>&1
 if exist "%TARGET%" (
     set /a tries+=1
-    if !tries! GEQ 30 goto :give_up
-    timeout /t 1 /nobreak >nul
+    if !tries! GEQ 45 goto :give_up
+    timeout /t 2 /nobreak >nul
     goto :wait_unlock
 )
 
 move /y "%NEWFILE%" "%TARGET%" >nul
 if errorlevel 1 goto :give_up
 
+rem 새 .exe 를 바로 실행하면 이전 _MEI 잔존 파일과 충돌할 수 있어 추가 대기
+timeout /t 2 /nobreak >nul
 start "" "%TARGET%"
 del "%~f0" >nul 2>&1
 exit /b 0
@@ -159,9 +166,14 @@ def _spawn_replace_and_exit(
     except Exception:
         # 안전망: shell 실행
         subprocess.Popen(["cmd", "/c", bat_path], close_fds=True, shell=False)
-    # 약간의 race 회피 — Tk 종료 시간 확보
+    # 약간의 race 회피 — Tk 종료 시간 확보 후 os._exit 로 즉시 종료
+    # (sys.exit 은 Python cleanup 이 돌면서 _MEI 파일 핸들을 늦게 닫는 경우
+    #  다음 런치의 DLL 로드를 방해할 수 있음)
     time.sleep(0.4)
-    sys.exit(0)
+    try:
+        os._exit(0)
+    except Exception:
+        sys.exit(0)
 
 
 # ── 메인 진입점 ─────────────────────────────────────────────────────────
