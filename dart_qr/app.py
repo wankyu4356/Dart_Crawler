@@ -21,19 +21,25 @@ from .orchestrator import RunConfig, run_quickreport
 
 
 # ── 디자인 토큰 ──────────────────────────────────────────────────────────
-PRIMARY   = "#1a237e"
-PRIMARY_2 = "#283593"
+PRIMARY   = "#10174a"
+PRIMARY_2 = "#1a237e"
 PRIMARY_3 = "#3949ab"
+PRIMARY_4 = "#5c6bc0"
 ACCENT    = "#ff6b35"
 ACCENT_2  = "#e65a2a"
-INK       = "#1c1f24"
-INK_2     = "#37474f"
-BG        = "#f4f5f7"
+GOLD      = "#ffd180"
+INK       = "#0f172a"
+INK_2     = "#334155"
+INK_3     = "#475569"
+BG        = "#eef0f5"
 SURFACE   = "#ffffff"
-BORDER    = "#e4e7ec"
-MUTED     = "#78909c"
-LOG_BG    = "#1c1f24"
-LOG_FG    = "#cfd8dc"
+SURFACE_2 = "#f8fafc"
+BORDER    = "#dfe3ec"
+BORDER_2  = "#c7cfdc"
+MUTED     = "#64748b"
+LOG_BG    = "#0f172a"
+LOG_FG    = "#cbd5e1"
+LOG_ACCENT = "#f8fafc"
 
 
 def _open_path(path: str) -> None:
@@ -71,83 +77,113 @@ class App(tk.Tk):
         except tk.TclError:
             pass
 
+        # 앱 전체 기본 배경
+        self.configure(bg=BG)
+
         # HERO
         style.configure("Hero.TFrame", background=PRIMARY)
+        style.configure("HeroInner.TFrame", background=PRIMARY)
         style.configure("Hero.TLabel", background=PRIMARY, foreground="#ffffff",
-                        font=("Segoe UI", 18, "bold"))
-        style.configure("HeroSub.TLabel", background=PRIMARY, foreground="#bbdefb",
+                        font=("Segoe UI", 22, "bold"))
+        style.configure("HeroSub.TLabel", background=PRIMARY, foreground="#aebfff",
                         font=("Segoe UI", 10))
-        style.configure("HeroPill.TLabel", background=PRIMARY_2, foreground="#ffffff",
-                        font=("Segoe UI", 9), padding=(10, 4))
+        style.configure("HeroPill.TLabel",
+                        background="#1f2a6e", foreground="#ffd180",
+                        font=("Segoe UI", 9, "bold"), padding=(12, 5))
 
-        # Card
+        # BG (루트 배경과 맞춤)
+        style.configure("Root.TFrame", background=BG)
         style.configure("Card.TFrame", background=SURFACE, borderwidth=0)
-        style.configure("Card.TLabelframe", background=SURFACE, padding=14,
-                        relief="flat", borderwidth=0)
-        style.configure("Card.TLabelframe.Label", background=SURFACE,
-                        foreground=PRIMARY, font=("Segoe UI", 10, "bold"))
 
-        # 일반 라벨/입력
+        # LabelFrame as 카드
+        style.configure("Card.TLabelframe",
+                        background=SURFACE, padding=18,
+                        relief="flat", borderwidth=1,
+                        bordercolor=BORDER)
+        style.configure("Card.TLabelframe.Label",
+                        background=SURFACE,
+                        foreground=PRIMARY_2,
+                        font=("Segoe UI", 10, "bold"))
+
+        # 라벨/입력
         style.configure("TLabel", background=SURFACE, foreground=INK,
                         font=("Segoe UI", 10))
-        style.configure("Field.TLabel", background=SURFACE, foreground=INK_2,
-                        font=("Segoe UI", 9))
+        style.configure("Field.TLabel", background=SURFACE, foreground=INK_3,
+                        font=("Segoe UI", 9, "bold"))
         style.configure("Hint.TLabel", background=SURFACE, foreground=MUTED,
                         font=("Segoe UI", 8))
-        style.configure("TEntry", fieldbackground=SURFACE, foreground=INK,
-                        padding=4)
-        style.configure("TCombobox", fieldbackground=SURFACE, padding=3)
-        style.configure("TSpinbox", fieldbackground=SURFACE, padding=3)
-        style.configure("TCheckbutton", background=SURFACE, foreground=INK,
+        style.configure("TEntry",
+                        fieldbackground=SURFACE_2, foreground=INK,
+                        bordercolor=BORDER_2, lightcolor=BORDER_2,
+                        padding=6)
+        style.map("TEntry",
+                  bordercolor=[("focus", PRIMARY_3)],
+                  lightcolor=[("focus", PRIMARY_3)])
+        style.configure("TCombobox",
+                        fieldbackground=SURFACE_2, padding=5,
+                        bordercolor=BORDER_2, lightcolor=BORDER_2)
+        style.configure("TSpinbox",
+                        fieldbackground=SURFACE_2, padding=4,
+                        bordercolor=BORDER_2, lightcolor=BORDER_2)
+        style.configure("TCheckbutton",
+                        background=SURFACE, foreground=INK,
                         font=("Segoe UI", 10))
 
-        # Primary 버튼
+        # 큰 Primary 버튼 (분석 시작)
         style.configure("Primary.TButton",
-                        background=PRIMARY, foreground="#ffffff",
-                        font=("Segoe UI", 12, "bold"),
-                        padding=(16, 12),
+                        background=PRIMARY_2, foreground="#ffffff",
+                        font=("Segoe UI", 13, "bold"),
+                        padding=(18, 14),
                         borderwidth=0, relief="flat")
         style.map("Primary.TButton",
-                  background=[("active", PRIMARY_3), ("disabled", "#90a4ae")],
-                  foreground=[("disabled", "#eceff1")])
+                  background=[("active", PRIMARY_3),
+                              ("pressed", PRIMARY),
+                              ("disabled", "#94a3b8")],
+                  foreground=[("disabled", "#f1f5f9")])
+        # Accent 액센트 버튼 (미사용 포함)
         style.configure("Accent.TButton",
                         background=ACCENT, foreground="#ffffff",
                         font=("Segoe UI", 10, "bold"),
-                        padding=(10, 6),
+                        padding=(12, 8),
                         borderwidth=0, relief="flat")
         style.map("Accent.TButton",
                   background=[("active", ACCENT_2)])
+        # Ghost 보조 버튼 (찾아보기)
         style.configure("Ghost.TButton",
-                        background=SURFACE, foreground=PRIMARY,
-                        font=("Segoe UI", 9),
-                        padding=(8, 4),
-                        borderwidth=1, relief="solid")
+                        background=SURFACE_2, foreground=PRIMARY_2,
+                        font=("Segoe UI", 9, "bold"),
+                        padding=(12, 7),
+                        borderwidth=1, relief="solid", bordercolor=BORDER_2)
         style.map("Ghost.TButton",
-                  background=[("active", "#eceff4")])
+                  background=[("active", "#eef2fb")],
+                  bordercolor=[("active", PRIMARY_3)])
 
         # 상태바
-        style.configure("Status.TFrame", background=PRIMARY_2)
-        style.configure("Status.TLabel", background=PRIMARY_2, foreground="#cfd8dc",
+        style.configure("Status.TFrame", background=PRIMARY)
+        style.configure("Status.TLabel",
+                        background=PRIMARY, foreground="#94a3b8",
                         font=("Segoe UI", 9))
-        style.configure("StatusLink.TLabel", background=PRIMARY_2, foreground="#ffab91",
+        style.configure("StatusLink.TLabel",
+                        background=PRIMARY, foreground=GOLD,
                         font=("Segoe UI", 9, "bold"))
 
     # ── UI 구성 ───────────────────────────────────────────────────────
     def _build_ui(self) -> None:
         # ─── 1) HERO 배너
-        hero = ttk.Frame(self, style="Hero.TFrame", padding=(24, 18, 24, 18))
+        hero_wrap = tk.Frame(self, bg=PRIMARY, highlightthickness=0)
+        hero_wrap.pack(fill="x")
+        hero = ttk.Frame(hero_wrap, style="Hero.TFrame", padding=(32, 24, 32, 22))
         hero.pack(fill="x")
         ttk.Label(hero, text="완규의 딸깍공장",
                   style="Hero.TLabel").pack(anchor="w")
         ttk.Label(hero, text="DART 공시 자동 분석 · 클릭 한 번으로 기업 리포트",
-                  style="HeroSub.TLabel").pack(anchor="w", pady=(2, 8))
-        ttk.Label(hero, text=f"v{__version__}  ·  문의: {cfgmod.CONTACT_EMAIL}",
+                  style="HeroSub.TLabel").pack(anchor="w", pady=(4, 10))
+        ttk.Label(hero, text=f"v{__version__}    문의 · {cfgmod.CONTACT_EMAIL}",
                   style="HeroPill.TLabel").pack(anchor="w")
 
         # ─── 2) 본문 영역 (카드 래퍼)
-        wrap = ttk.Frame(self, padding=(18, 12, 18, 0))
-        wrap.configure(style="Card.TFrame")
-        wrap.pack(fill="x")
+        wrap = tk.Frame(self, bg=BG)
+        wrap.pack(fill="x", padx=20, pady=(14, 0))
 
         # Card 1: 분석 대상
         card1 = ttk.Labelframe(wrap, text=" 분석 대상 ", style="Card.TLabelframe")
@@ -222,19 +258,21 @@ class App(tk.Tk):
         card3.grid_columnconfigure(1, weight=1)
 
         # ─── 3) 실행 버튼 (큰 Primary)
-        btnwrap = ttk.Frame(self, padding=(18, 4, 18, 8))
-        btnwrap.configure(style="Card.TFrame")
-        btnwrap.pack(fill="x")
-        self.btn_run = ttk.Button(btnwrap, text="▶  분석 시작",
+        btnwrap = tk.Frame(self, bg=BG)
+        btnwrap.pack(fill="x", padx=20, pady=(8, 10))
+        self.btn_run = ttk.Button(btnwrap, text="▶   분석 시작",
                                   style="Primary.TButton", command=self._start)
         self.btn_run.pack(fill="x")
 
         # ─── 4) 로그 영역 (다크 배경)
-        logwrap = ttk.Frame(self, padding=(18, 0, 18, 8))
-        logwrap.configure(style="Card.TFrame")
-        logwrap.pack(fill="both", expand=True)
-        ttk.Label(logwrap, text="진행 로그", style="Field.TLabel").pack(
-            anchor="w", pady=(4, 2))
+        logwrap = tk.Frame(self, bg=BG)
+        logwrap.pack(fill="both", expand=True, padx=20, pady=(0, 8))
+        log_header = tk.Frame(logwrap, bg=LOG_BG, height=36, highlightthickness=0)
+        log_header.pack(fill="x")
+        tk.Label(log_header, text="  ●  진행 로그",
+                 bg=LOG_BG, fg=LOG_ACCENT,
+                 font=("Segoe UI", 10, "bold"),
+                 anchor="w", padx=14, pady=8).pack(side="left")
 
         log_inner = tk.Frame(logwrap, bg=LOG_BG, bd=0, highlightthickness=0)
         log_inner.pack(fill="both", expand=True)
@@ -243,25 +281,27 @@ class App(tk.Tk):
             font=("Consolas", 10),
             bg=LOG_BG, fg=LOG_FG,
             insertbackground=LOG_FG,
-            bd=0, padx=10, pady=10,
+            bd=0, padx=14, pady=12,
             highlightthickness=0,
         )
         self.txt.pack(fill="both", expand=True)
-        self.txt.tag_configure("ok", foreground="#81c784")
-        self.txt.tag_configure("warn", foreground="#ffb74d")
-        self.txt.tag_configure("err", foreground="#ef5350")
+        self.txt.tag_configure("ok", foreground="#86efac")
+        self.txt.tag_configure("warn", foreground="#fcd34d")
+        self.txt.tag_configure("err", foreground="#fca5a5")
 
         # ─── 5) 상태바
         status = ttk.Frame(self, style="Status.TFrame",
-                           padding=(16, 6, 16, 6))
+                           padding=(20, 10, 20, 10))
         status.pack(fill="x", side="bottom")
         ttk.Label(status,
-                  text=f"완규의 딸깍공장  v{__version__}",
+                  text=f"완규의 딸깍공장   v{__version__}",
                   style="Status.TLabel").pack(side="left")
-        ttk.Label(status, text="│", style="Status.TLabel").pack(side="left", padx=8)
+        ttk.Label(status, text="│", style="Status.TLabel").pack(side="left", padx=12)
+        ttk.Label(status, text="문의:",
+                  style="Status.TLabel").pack(side="left")
         ttk.Label(status,
-                  text=f"문의: {cfgmod.CONTACT_EMAIL}",
-                  style="StatusLink.TLabel").pack(side="left")
+                  text=cfgmod.CONTACT_EMAIL,
+                  style="StatusLink.TLabel").pack(side="left", padx=(6, 0))
 
         # 기본 포커스·엔터 바인딩
         self.cmb_company.focus_set()

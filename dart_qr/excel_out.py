@@ -28,7 +28,17 @@ HEADER_FILL = PatternFill("solid", fgColor="305496")
 SUBHEADER_FILL = PatternFill("solid", fgColor="D9E1F2")
 RATIO_FILL = PatternFill("solid", fgColor="F3F6FB")   # 비율 행 옅은 음영
 RATIO_FONT = Font(italic=True, color="1F3864")
+LINK_FONT = Font(color="0563C1", underline="single")   # 하이퍼링크 스타일
 WRAP = Alignment(wrap_text=True, vertical="top")
+
+
+def _apply_hyperlink(cell, url: str, display: str = None) -> None:
+    """openpyxl 셀에 하이퍼링크 적용."""
+    if not url:
+        return
+    cell.value = display if display else url
+    cell.hyperlink = url
+    cell.font = LINK_FONT
 
 # 셀 표시 포맷 — 값은 raw 숫자(원 단위)로 저장하고 표시만 포맷
 KRW_FMT = '#,##0'           # 1,234,567,890
@@ -361,13 +371,18 @@ def _write_disclosure_list(wb: Workbook, discs: List[Disclosure]) -> None:
                "Implication", "상태", "DART 링크"]
     ws.append(headers)
     _style_header(ws, 1, len(headers))
+    # 제목 컬럼(5) 을 하이퍼링크로 만들고, DART 링크 컬럼(9) 에도 "열기" 링크
     for d in discs:
         ws.append([
             d.rcept_dt, d.ty_label, d.pblntf_detail_ty, d.flr_nm,
             d.report_nm, d.summary,
-            d.implication, d.llm_status, d.viewer_url,
+            d.implication, d.llm_status, "",
         ])
-    # 요약/implication 줄바꿈
+        r = ws.max_row
+        # 제목 → 하이퍼링크
+        _apply_hyperlink(ws.cell(row=r, column=5), d.viewer_url, d.report_nm)
+        # DART 링크 열 → "열기"
+        _apply_hyperlink(ws.cell(row=r, column=9), d.viewer_url, "열기 ↗")
     for row in ws.iter_rows(min_row=2, min_col=6, max_col=7):
         for cell in row:
             cell.alignment = WRAP
@@ -382,12 +397,15 @@ def _write_important_details(wb: Workbook, discs: List[Disclosure]) -> None:
         if d.llm_status != "ok":
             continue
         ws.append([
-            d.rcept_dt, d.report_nm, d.ty_label,
+            d.rcept_dt, "", d.ty_label,
             d.summary,
             "\n".join(f"• {kp}" for kp in d.key_points),
             d.implication,
-            d.viewer_url,
+            "",
         ])
+        r = ws.max_row
+        _apply_hyperlink(ws.cell(row=r, column=2), d.viewer_url, d.report_nm)
+        _apply_hyperlink(ws.cell(row=r, column=7), d.viewer_url, "열기 ↗")
     for row in ws.iter_rows(min_row=2, min_col=4, max_col=6):
         for cell in row:
             cell.alignment = WRAP
@@ -401,9 +419,16 @@ def _write_business(wb: Workbook, biz: Optional[dict]) -> None:
     ws["A1"] = "회사 개요 (Business Profile)"
     ws["A1"].font = Font(bold=True, size=14)
     src = biz.get("_source_report_nm") or ""
+    src_rcept = biz.get("_source_rcept_no") or ""
     if src:
-        ws["A2"] = f"기준 보고서: {src}"
+        ws["A2"] = "기준 보고서:"
         ws["A2"].font = Font(italic=True, color="607D8B")
+        if src_rcept:
+            url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={src_rcept}"
+            _apply_hyperlink(ws.cell(row=2, column=2), url, src)
+        else:
+            ws["B2"] = src
+            ws["B2"].font = Font(italic=True, color="607D8B")
 
     r = 4
     summary = (biz.get("business_summary") or "").strip()

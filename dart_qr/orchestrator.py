@@ -74,11 +74,14 @@ def _fill_da_from_body(
     if not rcept_no:
         return
     from . import disclosures as _d
-    body = _d.fetch_body(rcept_no, cap=80000)
-    if not body:
+    # 사업보고서는 수백 페이지 → 일반 cap 안에 CF/성격별 주석이 빠질 수 있음.
+    # 훨씬 큰 cap 으로 받은 뒤 D&A 관련 구간만 다시 슬라이싱해 Claude 에 제공.
+    body_full = _d.fetch_body(rcept_no, cap=600000)
+    if not body_full:
         log(f"    본문 비어있음 → D&A 보강 skip")
         return
-    log(f"    본문 {len(body):,}자 → Claude D&A 추출")
+    body = biz_mod.slice_da_relevant(body_full, cap=60000)
+    log(f"    본문 {len(body_full):,}자 → D&A 관련 구간 {len(body):,}자 슬라이싱")
     try:
         parsed = llm_mod.extract_da_from_body(
             body, client=client, **({"model": model} if model else {}),

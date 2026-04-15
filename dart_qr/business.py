@@ -86,35 +86,125 @@ _SECTION_END = [
 
 
 def slice_business_section(full_body: str, fallback_head: int = 60000) -> str:
-    """본문에서 II. 사업의 내용 ~ III. 재무 사이 텍스트만 추출.
+    """본문에서 II. 사업의 내용 ~ III. 재무 사이 **본문 구간** 만 선택.
 
-    사업보고서는 섹션이 잘 정의돼 있음. 감사보고서는 마커가 없을 수 있어
-    fallback 으로 앞쪽 fallback_head 자를 사용.
+    사업보고서 document.xml 은 보통 구조가:
+      표지 / 목차 [II. 사업의 내용 ← 여기가 먼저 매칭됨!]
+      I. 회사의 개요
+      II. 사업의 내용 [실제 본문. 수만 자]
+      III. 재무에 관한 사항
+
+    첫 번째 매칭을 쓰면 "목차" 만 캡처해 빈 섹션이 됨. 따라서 모든 매칭 쌍
+    (start, end) 을 구해 **가장 긴 구간** 을 본문으로 선택.
+
+    감사보고서는 섹션 마커가 없거나 다르므로 마커 못 찾으면 앞 60k 폴백.
     """
     if not full_body:
         return ""
-    # 가장 먼저 나타나는 start marker 찾기
-    start_idx = -1
-    for m in _SECTION_START:
-        idx = full_body.find(m)
-        if idx >= 0 and (start_idx < 0 or idx < start_idx):
-            start_idx = idx
-    if start_idx < 0:
-        # 마커 없음 → 본문 앞부분 (감사보고서 케이스)
+
+    start_marks = [
+        "II. 사업의 내용",
+        "Ⅱ. 사업의 내용",
+        "II.사업의 내용",
+        "Ⅱ.사업의 내용",
+        "2. 사업의 내용",
+        "제2부 사업의 내용",
+        "사업의 내용",
+    ]
+    end_marks = [
+        "III. 재무에 관한 사항",
+        "Ⅲ. 재무에 관한 사항",
+        "III.재무에 관한 사항",
+        "Ⅲ.재무에 관한 사항",
+        "3. 재무에 관한 사항",
+        "III. 재무제표 등",
+        "Ⅲ. 재무제표 등",
+        "재무에 관한 사항",
+    ]
+
+    # start 모든 인덱스 수집
+    starts: List[int] = []
+    for m in start_marks:
+        idx = 0
+        while True:
+            i = full_body.find(m, idx)
+            if i < 0:
+                break
+            starts.append(i)
+            idx = i + 1
+    if not starts:
+        return full_body[:fallback_head]
+    starts = sorted(set(starts))
+
+    # 각 start 마커별로 다음 end 마커까지 길이 측정 → 가장 긴 것 선택
+    best_span: Optional[tuple[int, int]] = None
+    best_len = 0
+    for s in starts:
+        next_end = len(full_body)
+        for m in end_marks:
+            i = full_body.find(m, s + 10)
+            if i > s and i < next_end:
+                next_end = i
+        length = next_end - s
+        if length > best_len:
+            best_len = length
+            best_span = (s, next_end)
+
+    if best_span is None or best_len < 300:
+        # 본문 매칭 실패 (목차밖에 없음) → 폴백
         return full_body[:fallback_head]
 
-    # start 이후 가장 먼저 나타나는 end marker
-    end_idx = len(full_body)
-    for m in _SECTION_END:
-        idx = full_body.find(m, start_idx + 10)
-        if idx > start_idx and idx < end_idx:
-            end_idx = idx
-
-    section = full_body[start_idx:end_idx]
-    # LLM 입력 cap (재무/주주 파싱과 별도의 cap)
-    if len(section) > 70000:
-        section = section[:70000] + "\n...[섹션 cap]"
+    s, e = best_span
+    section = full_body[s:e]
+    if len(section) > 80000:
+        section = section[:80000] + "\n...[섹션 cap]"
     return section
+
+
+def slice_da_relevant(body: str, cap: int = 50000) -> str:
+    """D&A 가 등장할 만한 구간만 병합 슬라이싱.
+
+      • 현금흐름표 / 영업활동으로인한현금흐름
+      • 감가상각비 / 무형자산상각비 / 상각비
+      • 비용의 성격별 분류 주석
+
+    각 마커 주변 앞 500 / 뒤 4000자 수집 후 겹치면 병합. cap 이하로 자름.
+    """
+    if not body:
+        return ""
+    markers = [
+        "현금흐름표", "현 금 흐 름 표",
+        "영업활동으로인한현금흐름", "영업활동 현금흐름", "영업활동현금흐름",
+        "감가상각비", "무형자산상각비", "상각비용",
+        "비용의 성격별", "비용의성격별", "성격별 분류", "성격별분류",
+        "유형자산 및 무형자산", "유형자산감가상각",
+    ]
+    spans: List[tuple[int, int]] = []
+    for m in markers:
+        idx = 0
+        while True:
+            i = body.find(m, idx)
+            if i < 0:
+                break
+            a = max(0, i - 500)
+            b = min(len(body), i + 4000)
+            spans.append((a, b))
+            idx = i + len(m)
+    if not spans:
+        return body[:cap]
+    # merge
+    spans.sort()
+    merged: List[tuple[int, int]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    parts = [body[s:e] for s, e in merged]
+    text = "\n---\n".join(parts)
+    if len(text) > cap:
+        text = text[:cap] + "\n...[cap]"
+    return text
 
 
 def fetch_business_profile(
