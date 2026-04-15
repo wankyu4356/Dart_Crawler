@@ -112,14 +112,15 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
     from openpyxl.utils import get_column_letter
 
     ws = wb.create_sheet("재무")
-    # 연도 헤더에 CFS/OFS 구분 표시 (혼합 모드 대응)
+    # 연도 헤더에 연결/별도 구분 (한국어) 표시
+    FS_KR = {"CFS": "연결", "OFS": "별도"}
     headers = ["계정"]
     for y in fin.annual:
-        tag = f" · {y.fs_div}" if y.fs_div in ("CFS", "OFS") else ""
+        tag = f" · {FS_KR.get(y.fs_div, y.fs_div)}" if y.fs_div in ("CFS", "OFS") else ""
         headers.append(f"{y.year} ({y.reprt_label}{tag})")
     if fin.latest_quarter:
         q = fin.latest_quarter
-        tag = f" · {q.fs_div}" if q.fs_div in ("CFS", "OFS") else ""
+        tag = f" · {FS_KR.get(q.fs_div, q.fs_div)}" if q.fs_div in ("CFS", "OFS") else ""
         headers.append(f"{q.year} {q.reprt_label}{tag}")
     ws.append(headers)
     _style_header(ws, 1, len(headers))

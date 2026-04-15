@@ -304,28 +304,69 @@ section.card h3::before{
 
 /* Business Profile */
 .biz .biz-summary{
-  background:#f3f6ff; border-left:4px solid var(--primary);
-  padding:12px 16px; border-radius:8px; font-size:14.5px;
-  line-height:1.6;
+  background:linear-gradient(135deg, #eef2fb 0%, #f5f0ff 100%);
+  border-left:4px solid var(--primary);
+  padding:16px 20px; border-radius:10px; font-size:14.5px;
+  line-height:1.7; color:var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(26,35,126,.08);
 }
-.chips{display:flex; flex-wrap:wrap; gap:6px; margin:4px 0 10px;}
+.chips{display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 14px;}
 .chip{
-  display:inline-block; background:#eef2fb; color:var(--primary);
-  padding:4px 10px; border-radius:999px; font-size:12px; font-weight:500;
+  display:inline-flex; align-items:center; gap:6px;
+  background:linear-gradient(135deg,#eef2fb,#e3e8fb);
+  color:var(--primary);
+  padding:6px 14px; border-radius:999px; font-size:12px; font-weight:600;
+  border:1px solid rgba(26,35,126,.12);
+  box-shadow: 0 1px 2px rgba(26,35,126,.06);
+  transition: transform .12s ease;
+}
+.chip:hover{ transform: translateY(-1px); }
+.chip::before{
+  content:""; width:6px; height:6px; border-radius:50%;
+  background:var(--primary); display:inline-block;
 }
 table.seg td, table.seg th{font-size:13px;}
 table.seg td:nth-child(2), table.seg td:nth-child(3){
   text-align:right; font-variant-numeric:tabular-nums;
 }
 .two-col{
-  display:grid; grid-template-columns:1fr 1fr; gap:18px;
-  margin:10px 0;
+  display:grid; grid-template-columns:1fr 1fr; gap:20px;
+  margin:12px 0;
 }
 @media (max-width:720px){ .two-col{grid-template-columns:1fr;} }
-ul.insights{margin:4px 0 0 18px; padding:0;}
+
+ul.counterparty{list-style:none; padding:0; margin:4px 0 0 0;}
+ul.counterparty li{
+  padding:10px 14px; margin-bottom:8px;
+  background:var(--soft);
+  border:1px solid var(--border); border-left:3px solid var(--primary-3);
+  border-radius:8px; font-size:13px; line-height:1.5;
+}
+ul.counterparty .counterparty-meta{
+  display:inline-block; margin-top:4px;
+  color:var(--ink-2); font-size:12px;
+}
+
+ul.insights{margin:4px 0 0 0; padding:0; list-style:none;}
 ul.insights li{
-  margin:4px 0; padding:4px 8px; background:#fff8ef;
-  border-left:3px solid var(--accent); border-radius:4px;
+  margin:6px 0; padding:10px 14px;
+  background:linear-gradient(135deg,#fff8ef 0%, #fff3e0 100%);
+  border-left:4px solid var(--accent);
+  border-radius:8px; font-size:13.5px; line-height:1.5;
+  box-shadow: 0 1px 2px rgba(255,107,53,.08);
+  position:relative;
+}
+ul.insights li::before{
+  content:"▸"; color:var(--accent); font-weight:bold;
+  margin-right:6px;
+}
+.insight-tag{
+  display:inline-block;
+  background:rgba(255,107,53,.15); color:#d84315;
+  padding:2px 8px; border-radius:999px;
+  font-size:11px; font-weight:700; letter-spacing:.02em;
+  margin-left:6px;
+  border:1px solid rgba(255,107,53,.3);
 }
 
 /* Exec body */
@@ -585,29 +626,114 @@ def _business_section(cnt: SectionCounter, biz: Optional[dict]) -> str:
             "</thead><tbody>" + "".join(rows) + "</tbody></table>"
         )
 
-    # 매출처 / 매입처 2컬럼
+    # 매출처 / 매입처 2컬럼 — 수치 있으면 함께 표기, 없으면 이름만
+    def _fmt_counterparty_item(item):
+        """item 이 dict 면 name + share_pct + amount, 문자열이면 그대로."""
+        if isinstance(item, str):
+            return _esc(item)
+        if not isinstance(item, dict):
+            return _esc(str(item))
+        name = _esc(item.get("name", ""))
+        parts = []
+        sp = item.get("share_pct")
+        if isinstance(sp, (int, float)):
+            parts.append(f"<b>{sp:.1f}%</b>")
+        amt = item.get("amount")
+        if isinstance(amt, (int, float)):
+            # 조/억/만 단위 포맷
+            a = abs(amt)
+            if a >= 1e12:
+                parts.append(f"{amt/1e12:,.2f}조")
+            elif a >= 1e8:
+                parts.append(f"{amt/1e8:,.0f}억")
+            elif a >= 1e4:
+                parts.append(f"{amt/1e4:,.0f}만")
+            else:
+                parts.append(f"{amt:,.0f}원")
+        note = item.get("amount_note") or ""
+        if note:
+            parts.append(f"<span class='muted small'>{_esc(note)}</span>")
+        desc = item.get("description") or ""
+        badge = ""
+        if parts:
+            badge = " · ".join(parts)
+            badge = f"<span class='counterparty-meta'>{badge}</span>"
+        desc_html = f" <span class='muted small'>— {_esc(desc)}</span>" if desc else ""
+        return f"<b>{name}</b>{desc_html}<br>{badge}" if badge else f"<b>{name}</b>{desc_html}"
+
+    def _has_data(items):
+        if not items:
+            return False
+        return any(
+            (isinstance(x, str) and x.strip()) or
+            (isinstance(x, dict) and (x.get("name") or "").strip())
+            for x in items
+        )
+
     cs_html = ""
-    if customers or suppliers:
-        def _ul(items):
-            if not items:
-                return "<p class='muted'>(정보 없음)</p>"
-            return "<ul>" + "".join(f"<li>{_esc(x)}</li>" for x in items[:15]) + "</ul>"
+    if _has_data(customers) or _has_data(suppliers):
+        def _list_block(items):
+            if not _has_data(items):
+                return "<p class='muted small'>(공시에 구체적 기재 없음)</p>"
+            return ("<ul class='counterparty'>" +
+                    "".join(f"<li>{_fmt_counterparty_item(x)}</li>" for x in items[:15]) +
+                    "</ul>")
         cs_html = f"""
   <div class="two-col">
     <div>
       <h3>주요 매출처 (고객)</h3>
-      {_ul(customers)}
+      {_list_block(customers)}
     </div>
     <div>
       <h3>주요 매입처 (공급)</h3>
-      {_ul(suppliers)}
+      {_list_block(suppliers)}
     </div>
   </div>"""
 
-    # 투자 포인트
+    # 투자 포인트 — "내용 (분류키워드)" 렌더. ":" 구분자도 대응.
+    # 분류 키워드 휴리스틱: 5~12자 이내 + 특정 키워드 포함이면 분류로 판단
+    KEYWORD_HINTS = (
+        "드라이버", "리스크", "포인트", "강점", "약점",
+        "경쟁", "밸류", "재무", "규제", "성장", "기회", "위협",
+        "역풍", "모멘텀", "트렌드", "시너지",
+    )
+
+    def _looks_like_tag(s: str) -> bool:
+        s = s.strip()
+        if not (1 <= len(s) <= 18):
+            return False
+        return any(k in s for k in KEYWORD_HINTS)
+
+    def _render_insight(text: str) -> str:
+        import re as _re
+        raw = str(text).strip()
+        # 1) 이미 끝에 "(...)" 형태
+        m = _re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", raw)
+        if m and m.group(2).strip():
+            return (f"{_esc(m.group(1).strip())} "
+                    f"<span class='insight-tag'>({_esc(m.group(2).strip())})</span>")
+        # 2) "X: Y" 형태 — 짧은 쪽이 태그
+        if ":" in raw:
+            left, right = [p.strip() for p in raw.split(":", 1)]
+            if left and right:
+                if _looks_like_tag(left) and not _looks_like_tag(right):
+                    return (f"{_esc(right)} "
+                            f"<span class='insight-tag'>({_esc(left)})</span>")
+                if _looks_like_tag(right) and not _looks_like_tag(left):
+                    return (f"{_esc(left)} "
+                            f"<span class='insight-tag'>({_esc(right)})</span>")
+                # 판별 어려우면 짧은 쪽을 태그
+                if len(left) <= len(right):
+                    return (f"{_esc(right)} "
+                            f"<span class='insight-tag'>({_esc(left)})</span>")
+                else:
+                    return (f"{_esc(left)} "
+                            f"<span class='insight-tag'>({_esc(right)})</span>")
+        return _esc(raw)
+
     ins_html = ""
     if insights:
-        lis = "".join(f"<li>{_esc(x)}</li>" for x in insights)
+        lis = "".join(f"<li>{_render_insight(x)}</li>" for x in insights)
         ins_html = f'<h3>투자 포인트</h3><ul class="insights">{lis}</ul>'
 
     sum_html = (
@@ -717,21 +843,33 @@ def _financials_section(
     if not fin.annual and not fin.latest_quarter:
         return f'<section class="card"><h2><span class="secnum">{n}</span> 재무 하이라이트</h2>' \
                f'<p class="muted">수집된 재무 데이터가 없습니다.</p></section>'
-    fs_hint = ""
-    if fin.annual and fin.annual[0].fs_div:
-        fs_hint = f'<span class="hint">기준: {fin.annual[0].fs_div} (연결 우선)</span>'
-
-    # 혼합 모드 각주: 일부 연도가 다른 기준(CFS/OFS) 이면 각주 표시
-    fs_values = {y.fs_div for y in fin.annual if y.fs_div}
+    FS_KR = {"CFS": "연결재무제표", "OFS": "별도재무제표"}
+    fs_values_list = [y.fs_div for y in fin.annual if y.fs_div]
+    fs_unique = set(fs_values_list)
     ofs_years = [y.year for y in fin.annual if y.fs_div == "OFS"]
     cfs_years = [y.year for y in fin.annual if y.fs_div == "CFS"]
+
+    fs_hint = ""
+    if len(fs_unique) == 1 and fs_values_list:
+        lbl = FS_KR.get(fs_values_list[0], fs_values_list[0])
+        fs_hint = f'<span class="hint">재무 범위 · {lbl} 기준</span>'
+    elif len(fs_unique) > 1 and ofs_years and cfs_years:
+        fs_hint = (
+            f'<span class="hint">재무 범위 · 연결·별도 혼합 '
+            f'(연결 {len(cfs_years)}개년 + 별도 {len(ofs_years)}개년)</span>'
+        )
+    elif fin.annual and fin.annual[0].fs_div:
+        fs_hint = f'<span class="hint">재무 범위 · {fin.annual[0].fs_div}</span>'
+
+    # 혼합 모드 각주: 일부 연도가 다른 기준(CFS/OFS) 이면 각주 표시
     mixed_note = ""
-    if len(fs_values) > 1 and ofs_years and cfs_years:
+    if len(fs_unique) > 1 and ofs_years and cfs_years:
         mixed_note = (
-            f'<p class="muted small" style="margin-top:8px;">'
-            f'※ <b>{", ".join(str(y) for y in ofs_years)}</b>년 재무는 '
-            f'<b>별도</b>기준 (연결감사보고서 미제출).'
-            f' 다른 연도는 <b>연결</b>기준과 비교에 유의.'
+            f'<p class="muted small" style="margin-top:10px; padding:8px 12px; '
+            f'background:#fff8f8; border-left:3px solid var(--neg); border-radius:6px;">'
+            f'※ <b>{", ".join(str(y) for y in ofs_years)}</b>년은 '
+            f'<b>별도재무제표</b> 기준입니다 (해당 연도 연결감사보고서 미제출). '
+            f'다른 연도(<b>연결재무제표</b>)와 직접 비교 시 사업 범위 차이에 유의.'
             f'</p>'
         )
 

@@ -350,10 +350,30 @@ BUSINESS_SYSTEM = """당신은 PE 투자심사역입니다. 한국 기업의 사
     {"name":"사업부/제품군","revenue":숫자|null,"revenue_note":"단위/연도 설명",
      "op_margin_pct":숫자|null,"description":"한 줄 설명"}
   ],
-  "major_customers": ["고객사 1", ...],
-  "major_suppliers": ["공급사 1", ...],
-  "key_insights": ["투자 관점 2~4개 (성장 드라이버/리스크/경쟁 위치)"]
-}"""
+  "major_customers": [
+    {"name":"고객사 1", "share_pct":숫자|null, "amount":숫자|null,
+     "amount_note":"단위/연도 설명", "description":"한 줄 설명|null"}
+  ],
+  "major_suppliers": [
+    {"name":"공급사 1", "share_pct":숫자|null, "amount":숫자|null,
+     "amount_note":"단위/연도 설명", "description":"한 줄 설명|null"}
+  ],
+  "key_insights": [
+    "문장 내용 (분류 키워드)"
+  ]
+}
+
+매출처/매입처 규칙:
+  • 본문에 비중·거래금액 등 수치가 있으면 share_pct (%) 와 amount (원 단위)
+    로 채우고 amount_note 에 기준연도/단위 명시. 이름만 나열돼 있고 수치가
+    없으면 share_pct/amount/amount_note 는 null.
+  • 수치가 전혀 없는 이름은 배제 가능 (공시 의무가 없는 경우 많음).
+
+key_insights 형식:
+  • 반드시 "문장 내용 (분류 키워드)" 형태. 분류 키워드 예시:
+    성장 드라이버, 리스크, 경쟁 위치, 밸류드라이버, 재무 건전성, 규제 이슈.
+  • 예: "라이선스 부문 OPM 35% (밸류드라이버)",
+        "원재료 가격 변동 노출 (리스크)"."""
 
 
 # ── D&A 전용 추출 (최후 fallback) ──────────────────────────────────────
