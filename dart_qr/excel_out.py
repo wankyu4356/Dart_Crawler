@@ -108,18 +108,22 @@ def _write_profile(ws, profile: Profile, period_label: str) -> None:
     _autofit(ws)
 
 
-def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
+def _write_financials_sheet(wb: Workbook, sheet_name: str,
+                             annual_list, latest_q) -> None:
     from openpyxl.utils import get_column_letter
 
-    ws = wb.create_sheet("재무")
+    if not annual_list and not latest_q:
+        return
+
+    ws = wb.create_sheet(sheet_name)
     # 연도 헤더에 연결/별도 구분 (한국어) 표시
     FS_KR = {"CFS": "연결", "OFS": "별도"}
     headers = ["계정"]
-    for y in fin.annual:
+    for y in annual_list:
         tag = f" · {FS_KR.get(y.fs_div, y.fs_div)}" if y.fs_div in ("CFS", "OFS") else ""
         headers.append(f"{y.year} ({y.reprt_label}{tag})")
-    if fin.latest_quarter:
-        q = fin.latest_quarter
+    if latest_q:
+        q = latest_q
         tag = f" · {FS_KR.get(q.fs_div, q.fs_div)}" if q.fs_div in ("CFS", "OFS") else ""
         headers.append(f"{q.year} {q.reprt_label}{tag}")
     ws.append(headers)
@@ -169,10 +173,10 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
                     cell.fill = RATIO_FILL
             else:
                 # 일반 raw 값
-                for y in fin.annual:
+                for y in annual_list:
                     row.append(y.values.get(key))
-                if fin.latest_quarter:
-                    row.append(fin.latest_quarter.values.get(key))
+                if latest_q:
+                    row.append(latest_q.values.get(key))
                 ws.append(row)
                 row_of[key] = ws.max_row
                 for c in range(2, n_cols + 1):
@@ -186,7 +190,7 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
 
     # YoY 영역 — 수식 기반: =(curr/prev - 1)*100
     # annual 은 최신→과거 순. Excel 컬럼도 최신이 왼쪽(B), 과거가 오른쪽.
-    if len(fin.annual) >= 2:
+    if len(annual_list) >= 2:
         ws.append([])
         ws.append(["◆ YoY 성장률 (매출/영업이익/순이익)"])
         ws.cell(row=ws.max_row, column=1).font = Font(bold=True, color="305496")
@@ -201,10 +205,10 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
             if src_row is None:
                 continue
             # 각 annual 연도 i 에 대해 i+1 (전년) 대비 수식. 마지막 열(가장 과거)은 비교 불가.
-            for i in range(len(fin.annual)):
+            for i in range(len(annual_list)):
                 col_curr = get_column_letter(2 + i)
                 col_prev = get_column_letter(2 + i + 1)
-                if i + 1 >= len(fin.annual):
+                if i + 1 >= len(annual_list):
                     break  # 마지막 연도는 전년 없음 → 빈 셀
                 cell = ws.cell(row=yoy_row_idx, column=2 + i)
                 cell.value = (
@@ -213,12 +217,12 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
                 cell.number_format = PCT_FMT
                 cell.alignment = Alignment(horizontal="right")
             # 나머지 셀 (마지막 연도 + 분기) 포맷만
-            for c in range(2 + max(len(fin.annual) - 1, 0), n_cols + 1):
+            for c in range(2 + max(len(annual_list) - 1, 0), n_cols + 1):
                 ws.cell(row=yoy_row_idx, column=c).number_format = PCT_FMT
 
     # 혼합 모드 각주
-    ofs_years = [y.year for y in fin.annual if y.fs_div == "OFS"]
-    cfs_years = [y.year for y in fin.annual if y.fs_div == "CFS"]
+    ofs_years = [y.year for y in annual_list if y.fs_div == "OFS"]
+    cfs_years = [y.year for y in annual_list if y.fs_div == "CFS"]
     if ofs_years and cfs_years:
         ws.append([])
         note = (f"※ {', '.join(str(y) for y in ofs_years)}년은 별도기준 "
@@ -227,6 +231,18 @@ def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
         ws.cell(row=ws.max_row, column=1).font = Font(italic=True, color="B71C1C")
 
     _autofit(ws, max_width=28)
+
+
+def _write_financials(wb: Workbook, fin: FinancialsBundle) -> None:
+    """재무 시트 최대 3벌 생성: 재무(hybrid) / 재무_연결 / 재무_별도."""
+    # 1) 기본 hybrid "재무" (기존 호환 유지)
+    _write_financials_sheet(wb, "재무", fin.annual, fin.latest_quarter)
+    # 2) 연결 전용
+    if fin.annual_cfs or fin.latest_quarter_cfs:
+        _write_financials_sheet(wb, "재무_연결", fin.annual_cfs, fin.latest_quarter_cfs)
+    # 3) 별도 전용
+    if fin.annual_ofs or fin.latest_quarter_ofs:
+        _write_financials_sheet(wb, "재무_별도", fin.annual_ofs, fin.latest_quarter_ofs)
 
 
 SJ_ORDER = ["BS", "IS", "CIS", "CF", "SCE"]

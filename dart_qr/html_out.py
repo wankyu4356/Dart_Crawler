@@ -362,12 +362,16 @@ ul.insights li::before{
 }
 .insight-tag{
   display:inline-block;
-  background:rgba(255,107,53,.15); color:#d84315;
-  padding:2px 8px; border-radius:999px;
+  background:linear-gradient(135deg,#fff2e0,#ffe0b2);
+  color:#c62828;
+  padding:3px 10px; border-radius:6px;
   font-size:11px; font-weight:700; letter-spacing:.02em;
-  margin-left:6px;
+  margin-right:10px;
   border:1px solid rgba(255,107,53,.3);
+  vertical-align:middle;
+  white-space:nowrap;
 }
+.insight-body{ vertical-align:middle; }
 
 /* Exec body */
 .exec{font-size:14.5px;}
@@ -419,6 +423,36 @@ table.fin tr.ratio td.neg{
   font-weight: 600;
 }
 table.fin .pos{color:var(--pos);} table.fin .neg{color:var(--neg);}
+
+/* FS Toggle (연결 / 별도) */
+.fs-toggle{
+  display:inline-flex; gap:4px;
+  background:var(--soft);
+  padding:4px;
+  border-radius:10px;
+  border:1px solid var(--border);
+  margin-bottom:14px;
+}
+.fs-toggle .tab{
+  background:transparent; border:none;
+  padding:8px 18px; font-size:13px; font-weight:600;
+  color:var(--muted);
+  border-radius:8px; cursor:pointer;
+  transition:background .15s, color .15s;
+  letter-spacing:-.01em;
+}
+.fs-toggle .tab:hover{ color:var(--ink); }
+.fs-toggle .tab.active{
+  background:linear-gradient(135deg, var(--primary), var(--primary-2));
+  color:#fff;
+  box-shadow:0 2px 6px rgba(26,35,126,.25);
+}
+.fs-toggle .tab.disabled{
+  color:#b0bec5; cursor:not-allowed;
+}
+.fs-toggle .tab.disabled:hover{ color:#b0bec5; background:transparent; }
+.fs-toggle .tab .muted{color:inherit; opacity:.7;}
+.fs-toggle .tab.active .muted{color:#fff; opacity:.85;}
 
 /* Charts grid */
 .chart-grid{
@@ -704,32 +738,31 @@ def _business_section(cnt: SectionCounter, biz: Optional[dict]) -> str:
             return False
         return any(k in s for k in KEYWORD_HINTS)
 
+    def _tag_chip(tag: str, body: str) -> str:
+        """태그 pill 을 **앞**에 + 괄호 없이 + 본문 뒤."""
+        return (f"<span class='insight-tag'>{_esc(tag)}</span>"
+                f"<span class='insight-body'>{_esc(body)}</span>")
+
     def _render_insight(text: str) -> str:
         import re as _re
         raw = str(text).strip()
-        # 1) 이미 끝에 "(...)" 형태
+        # 1) "내용 (태그)" 형태 — 괄호 제거하며 태그 pill 앞으로
         m = _re.match(r"^(.*?)\s*\(([^()]+)\)\s*$", raw)
         if m and m.group(2).strip():
-            return (f"{_esc(m.group(1).strip())} "
-                    f"<span class='insight-tag'>({_esc(m.group(2).strip())})</span>")
-        # 2) "X: Y" 형태 — 짧은 쪽이 태그
+            return _tag_chip(m.group(2).strip(), m.group(1).strip())
+        # 2) "X: Y" 형태 — 태그쪽 판별
         if ":" in raw:
             left, right = [p.strip() for p in raw.split(":", 1)]
             if left and right:
                 if _looks_like_tag(left) and not _looks_like_tag(right):
-                    return (f"{_esc(right)} "
-                            f"<span class='insight-tag'>({_esc(left)})</span>")
+                    return _tag_chip(left, right)
                 if _looks_like_tag(right) and not _looks_like_tag(left):
-                    return (f"{_esc(left)} "
-                            f"<span class='insight-tag'>({_esc(right)})</span>")
+                    return _tag_chip(right, left)
                 # 판별 어려우면 짧은 쪽을 태그
                 if len(left) <= len(right):
-                    return (f"{_esc(right)} "
-                            f"<span class='insight-tag'>({_esc(left)})</span>")
-                else:
-                    return (f"{_esc(left)} "
-                            f"<span class='insight-tag'>({_esc(right)})</span>")
-        return _esc(raw)
+                    return _tag_chip(left, right)
+                return _tag_chip(right, left)
+        return f"<span class='insight-body'>{_esc(raw)}</span>"
 
     ins_html = ""
     if insights:
@@ -765,16 +798,14 @@ def _exec_section(cnt: SectionCounter, exec_summary: Optional[str]) -> str:
 """
 
 
-def _fin_table(fin: FinancialsBundle) -> str:
-    """확장 KPI 표 (Performance + BS + YoY)."""
-    cols = [f"{y.year} ({y.reprt_label})" for y in fin.annual]
-    if fin.latest_quarter:
-        q = fin.latest_quarter
-        cols.append(f"{q.year} {q.reprt_label}")
+def _fin_table_for(annual: List, latest_q) -> str:
+    """확장 KPI 표 (Performance + BS + YoY) — 임의의 annual/latest_q 리스트로 렌더."""
+    cols = [f"{y.year} ({y.reprt_label})" for y in annual]
+    if latest_q:
+        cols.append(f"{latest_q.year} {latest_q.reprt_label}")
     head = "".join(f"<th>{_esc(c)}</th>" for c in cols)
 
     def _cell_for(key: str, v):
-        """값 하나를 <td> 로 렌더. 비율 음수는 빨간색 class."""
         txt = _esc(format_value(key, v))
         cls = ""
         if key in PCT_KEYS and isinstance(v, (int, float)) and v < 0:
@@ -784,33 +815,31 @@ def _fin_table(fin: FinancialsBundle) -> str:
     def _row_for(key: str) -> str:
         label = KEY_LABEL.get(key, key)
         cells = []
-        for y in fin.annual:
+        for y in annual:
             cells.append(_cell_for(key, y.values.get(key)))
-        if fin.latest_quarter:
-            cells.append(_cell_for(key, fin.latest_quarter.values.get(key)))
-        # 비율 행은 이탤릭 + 옅은 음영
+        if latest_q:
+            cells.append(_cell_for(key, latest_q.values.get(key)))
         tr_cls = ' class="ratio"' if key in PCT_KEYS else ""
         return f"<tr{tr_cls}><th>{_esc(label)}</th>{''.join(cells)}</tr>"
 
     perf_rows = "".join(_row_for(k) for k in PERFORMANCE_KEYS)
     bs_rows   = "".join(_row_for(k) for k in BALANCE_KEYS)
 
-    # YoY (매출/영업이익/순이익)
     yoy_html = ""
-    if len(fin.annual) >= 2:
+    if len(annual) >= 2:
         def _yoy_row(key: str, label: str) -> str:
             cells = []
-            for i, y in enumerate(fin.annual):
-                if i + 1 >= len(fin.annual):
+            for i, y in enumerate(annual):
+                if i + 1 >= len(annual):
                     cells.append("<td>-</td>")
                     continue
-                v = yoy(y.values.get(key), fin.annual[i + 1].values.get(key))
+                v = yoy(y.values.get(key), annual[i + 1].values.get(key))
                 if v is None:
                     cells.append("<td>-</td>")
                 else:
                     cls = "pos" if v >= 0 else "neg"
                     cells.append(f'<td class="{cls}">{v:+.1f}%</td>')
-            if fin.latest_quarter:
+            if latest_q:
                 cells.append("<td>-</td>")
             return f'<tr class="yoy"><th>{_esc(label)}</th>{"".join(cells)}</tr>'
         yoy_html = (
@@ -835,71 +864,103 @@ def _fin_table(fin: FinancialsBundle) -> str:
 """
 
 
+def _fin_table(fin: FinancialsBundle) -> str:
+    """기존 호환 — best(hybrid) 표 렌더."""
+    return _fin_table_for(fin.annual, fin.latest_quarter)
+
+
 def _financials_section(
     cnt: SectionCounter, fin: FinancialsBundle,
     chart_payload: Optional[Dict[str, Any]] = None,
 ) -> str:
     n = cnt.next()
-    if not fin.annual and not fin.latest_quarter:
-        return f'<section class="card"><h2><span class="secnum">{n}</span> 재무 하이라이트</h2>' \
+    has_cfs = bool(fin.annual_cfs or fin.latest_quarter_cfs)
+    has_ofs = bool(fin.annual_ofs or fin.latest_quarter_ofs)
+
+    if not fin.annual and not has_cfs and not has_ofs:
+        return f'<section class="card fin-card"><h2><span class="secnum">{n}</span> 재무 하이라이트</h2>' \
                f'<p class="muted">수집된 재무 데이터가 없습니다.</p></section>'
-    FS_KR = {"CFS": "연결재무제표", "OFS": "별도재무제표"}
-    fs_values_list = [y.fs_div for y in fin.annual if y.fs_div]
-    fs_unique = set(fs_values_list)
-    ofs_years = [y.year for y in fin.annual if y.fs_div == "OFS"]
-    cfs_years = [y.year for y in fin.annual if y.fs_div == "CFS"]
 
-    fs_hint = ""
-    if len(fs_unique) == 1 and fs_values_list:
-        lbl = FS_KR.get(fs_values_list[0], fs_values_list[0])
-        fs_hint = f'<span class="hint">재무 범위 · {lbl} 기준</span>'
-    elif len(fs_unique) > 1 and ofs_years and cfs_years:
-        fs_hint = (
-            f'<span class="hint">재무 범위 · 연결·별도 혼합 '
-            f'(연결 {len(cfs_years)}개년 + 별도 {len(ofs_years)}개년)</span>'
-        )
-    elif fin.annual and fin.annual[0].fs_div:
-        fs_hint = f'<span class="hint">재무 범위 · {fin.annual[0].fs_div}</span>'
-
-    # 혼합 모드 각주: 일부 연도가 다른 기준(CFS/OFS) 이면 각주 표시
-    mixed_note = ""
-    if len(fs_unique) > 1 and ofs_years and cfs_years:
-        mixed_note = (
-            f'<p class="muted small" style="margin-top:10px; padding:8px 12px; '
-            f'background:#fff8f8; border-left:3px solid var(--neg); border-radius:6px;">'
-            f'※ <b>{", ".join(str(y) for y in ofs_years)}</b>년은 '
-            f'<b>별도재무제표</b> 기준입니다 (해당 연도 연결감사보고서 미제출). '
-            f'다른 연도(<b>연결재무제표</b>)와 직접 비교 시 사업 범위 차이에 유의.'
-            f'</p>'
-        )
-
-    # 동적 단위: chart_payload 에서 꺼내오거나 기본값
     cp = chart_payload or {}
-    perf_unit = (cp.get("performance") or {}).get("unit", "억원")
-    bs_unit   = (cp.get("bs")          or {}).get("unit", "조원")
 
-    return f"""
-<section class="card">
-  <h2><span class="secnum">{n}</span> 재무 하이라이트{fs_hint}</h2>
-
+    def _render_view(fs: str, annual, latest_q, cp_fs: Dict[str, Any]) -> str:
+        """한 FS (cfs / ofs) 의 차트 3개 + 상세 표."""
+        if not annual and not latest_q:
+            return (f'<div class="fs-view" data-fs="{fs}" style="display:none">'
+                    f'<p class="muted">데이터 없음</p></div>')
+        perf_unit = (cp_fs.get("performance") or {}).get("unit", "억원")
+        bs_unit   = (cp_fs.get("bs")          or {}).get("unit", "조원")
+        table_html = _fin_table_for(annual, latest_q)
+        return f"""
+<div class="fs-view" data-fs="{fs}">
   <div class="chart-grid">
     <div class="chart-box wide">
       <h4>손익 추이 <span class="unit">단위: {_esc(perf_unit)}</span></h4>
-      <canvas id="chart-performance"></canvas>
+      <canvas id="chart-perf-{fs}"></canvas>
     </div>
     <div class="chart-box">
       <h4>마진 추이 <span class="unit">단위: %</span></h4>
-      <canvas id="chart-margin"></canvas>
+      <canvas id="chart-margin-{fs}"></canvas>
     </div>
     <div class="chart-box">
       <h4>재무상태 (자산 = 자본 + 부채) <span class="unit">단위: {_esc(bs_unit)}</span></h4>
-      <canvas id="chart-bs"></canvas>
+      <canvas id="chart-bs-{fs}"></canvas>
     </div>
   </div>
-
   <h3>상세 재무 표</h3>
-  {_fin_table(fin)}
-  {mixed_note}
+  {table_html}
+</div>"""
+
+    view_cfs = _render_view("cfs", fin.annual_cfs, fin.latest_quarter_cfs,
+                            cp.get("cfs") or {}) if has_cfs else (
+        '<div class="fs-view" data-fs="cfs" style="display:none">'
+        '<p class="muted">연결재무제표 데이터 없음</p></div>')
+    view_ofs = _render_view("ofs", fin.annual_ofs, fin.latest_quarter_ofs,
+                            cp.get("ofs") or {}) if has_ofs else (
+        '<div class="fs-view" data-fs="ofs" style="display:none">'
+        '<p class="muted">별도재무제표 데이터 없음</p></div>')
+
+    # 토글 버튼 (기본 CFS 활성)
+    default_fs = "cfs" if has_cfs else "ofs"
+    tab_cfs_cls = "tab active" if default_fs == "cfs" else "tab"
+    tab_ofs_cls = "tab active" if default_fs == "ofs" else "tab"
+    if not has_cfs:
+        tab_cfs_cls += " disabled"
+    if not has_ofs:
+        tab_ofs_cls += " disabled"
+    cfs_suffix = f"({len(fin.annual_cfs)}개년)" if has_cfs else "(없음)"
+    ofs_suffix = f"({len(fin.annual_ofs)}개년)" if has_ofs else "(없음)"
+
+    toggle_html = (
+        f'<div class="fs-toggle" role="tablist">'
+        f'<button class="{tab_cfs_cls}" data-fs="cfs" '
+        f'{"" if has_cfs else "disabled"}>연결 (CFS) <span class="muted small">{cfs_suffix}</span></button>'
+        f'<button class="{tab_ofs_cls}" data-fs="ofs" '
+        f'{"" if has_ofs else "disabled"}>별도 (OFS) <span class="muted small">{ofs_suffix}</span></button>'
+        f'</div>'
+    )
+
+    # 기본 뷰가 CFS 가 아니면 display 반전
+    if default_fs == "ofs":
+        view_cfs = view_cfs.replace('data-fs="cfs"', 'data-fs="cfs" style="display:none"', 1)
+        view_ofs = view_ofs.replace('style="display:none"', "", 1) if 'style="display:none"' in view_ofs else view_ofs
+
+    hint = ""
+    cfs_cnt = len(fin.annual_cfs)
+    ofs_cnt = len(fin.annual_ofs)
+    if cfs_cnt and ofs_cnt:
+        hint = f'<span class="hint">연결 {cfs_cnt}개년 · 별도 {ofs_cnt}개년 수집</span>'
+    elif cfs_cnt:
+        hint = f'<span class="hint">연결재무제표 기준 {cfs_cnt}개년</span>'
+    elif ofs_cnt:
+        hint = f'<span class="hint">별도재무제표 기준 {ofs_cnt}개년</span>'
+
+    return f"""
+<section class="card fin-card">
+  <h2><span class="secnum">{n}</span> 재무 하이라이트{hint}</h2>
+  {toggle_html}
+  {view_cfs}
+  {view_ofs}
 </section>
 """
 
@@ -1075,52 +1136,12 @@ CHART_INIT_JS = r"""
     }
   };
 
-  function fmtKRW(v) {
-    if (v == null || isNaN(v)) return '-';
-    var a = Math.abs(v), s = v < 0 ? '-' : '';
-    if (a >= 1e4) return s + (a/1e4).toLocaleString('ko-KR', {maximumFractionDigits:2}) + '조';
-    if (a >= 1)   return s + a.toLocaleString('ko-KR', {maximumFractionDigits:0}) + '억';
-    return s + a.toLocaleString('ko-KR');
-  }
   function fmtPct(v) {
     if (v == null || isNaN(v)) return '-';
     return v.toFixed(1) + '%';
   }
 
-  // ── 1. 손익 bar (동적 단위)
-  var p = CD.performance;
-  if (p && document.getElementById('chart-performance')) {
-    var pUnit = p.unit || '억원';
-    new Chart(document.getElementById('chart-performance'), {
-      type: 'bar',
-      data: { labels: p.labels, datasets: p.datasets },
-      options: Object.assign({}, COMMON, {
-        scales: {
-          y: {
-            ticks: {
-              callback: function(v){ return v.toLocaleString('ko-KR') + pUnit; },
-              font:{size:11}
-            },
-            grid: { color: '#eceff4' }
-          },
-          x: { grid: { display: false }, ticks: {font:{size:11}} }
-        },
-        plugins: Object.assign({}, COMMON.plugins, {
-          tooltip: Object.assign({}, COMMON.plugins.tooltip, {
-            callbacks: {
-              label: function(ctx){
-                var v = ctx.parsed.y;
-                return ctx.dataset.label + ': ' + (v == null ? '-'
-                  : v.toLocaleString('ko-KR', {maximumFractionDigits:2}) + pUnit);
-              }
-            }
-          })
-        })
-      })
-    });
-  }
-
-  // 0% 미만 영역을 연한 분홍으로 음영 (마진 차트 전용)
+  // 0% 미만 영역을 연한 분홍 (마진 차트 전용 plugin)
   var negativeZoneBg = {
     id: 'negativeZoneBg',
     beforeDatasetsDraw: function(chart) {
@@ -1128,96 +1149,119 @@ CHART_INIT_JS = r"""
       var yScale = chart.scales.y;
       if (!area || !yScale) return;
       var y0 = yScale.getPixelForValue(0);
-      if (y0 >= area.bottom) return;  // 전 구간 음수면 전체 음영
+      if (y0 >= area.bottom) return;
       var ctx = chart.ctx;
       ctx.save();
-      ctx.fillStyle = 'rgba(244, 143, 177, 0.18)';  // 연한 분홍
+      ctx.fillStyle = 'rgba(244, 143, 177, 0.18)';
       var top = Math.max(y0, area.top);
       ctx.fillRect(area.left, top, area.right - area.left, area.bottom - top);
-      // 0% 라인 점선
       ctx.strokeStyle = 'rgba(198, 40, 40, 0.35)';
       ctx.setLineDash([4, 4]);
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(area.left, y0);
-      ctx.lineTo(area.right, y0);
-      ctx.stroke();
-      ctx.restore();
+      ctx.moveTo(area.left, y0); ctx.lineTo(area.right, y0);
+      ctx.stroke(); ctx.restore();
     }
   };
 
-  // ── 2. 마진 line
-  var m = CD.margin;
-  if (m && document.getElementById('chart-margin')) {
-    m.datasets.forEach(function(ds){
-      ds.tension = 0.3;
-      ds.fill = false;
-      ds.pointRadius = 4;
-      ds.pointHoverRadius = 6;
-      ds.borderWidth = 2;
-    });
-    new Chart(document.getElementById('chart-margin'), {
-      type: 'line',
-      data: { labels: m.labels, datasets: m.datasets },
-      plugins: [negativeZoneBg],
-      options: Object.assign({}, COMMON, {
-        scales: {
-          y: {
-            ticks: { callback: function(v){ return v.toFixed(0) + '%'; }, font:{size:11} },
-            grid: { color: '#eceff4' }
+  function initFsCharts(fs) {
+    var payload = CD[fs];
+    if (!payload) return;
+
+    // 1) 손익 bar
+    var p = payload.performance;
+    var elP = document.getElementById('chart-perf-' + fs);
+    if (p && elP) {
+      var pUnit = p.unit || '억원';
+      new Chart(elP, {
+        type: 'bar',
+        data: { labels: p.labels, datasets: p.datasets },
+        options: Object.assign({}, COMMON, {
+          scales: {
+            y: {
+              ticks: { callback: function(v){ return v.toLocaleString('ko-KR') + pUnit; }, font:{size:11} },
+              grid: { color: '#eceff4' }
+            },
+            x: { grid: { display: false }, ticks: {font:{size:11}} }
           },
-          x: { grid: { display: false }, ticks: {font:{size:11}} }
-        },
-        plugins: Object.assign({}, COMMON.plugins, {
-          tooltip: Object.assign({}, COMMON.plugins.tooltip, {
-            callbacks: {
-              label: function(ctx){
-                return ctx.dataset.label + ': ' + fmtPct(ctx.parsed.y);
+          plugins: Object.assign({}, COMMON.plugins, {
+            tooltip: Object.assign({}, COMMON.plugins.tooltip, {
+              callbacks: {
+                label: function(ctx){
+                  var v = ctx.parsed.y;
+                  return ctx.dataset.label + ': ' + (v == null ? '-'
+                    : v.toLocaleString('ko-KR', {maximumFractionDigits:2}) + pUnit);
+                }
               }
-            }
+            })
           })
         })
-      })
-    });
-  }
+      });
+    }
 
-  // ── 3. BS stacked (동적 단위)
-  var b = CD.bs;
-  if (b && document.getElementById('chart-bs')) {
-    var bUnit = b.unit || '조원';
-    new Chart(document.getElementById('chart-bs'), {
-      type: 'bar',
-      data: { labels: b.labels, datasets: b.datasets },
-      options: Object.assign({}, COMMON, {
-        scales: {
-          y: {
-            stacked: true,
-            ticks: { callback: function(v){ return v.toLocaleString('ko-KR') + bUnit; }, font:{size:11} },
-            grid: { color: '#eceff4' }
+    // 2) 마진 line
+    var m = payload.margin;
+    var elM = document.getElementById('chart-margin-' + fs);
+    if (m && elM) {
+      m.datasets.forEach(function(ds){
+        ds.tension = 0.3; ds.fill = false;
+        ds.pointRadius = 4; ds.pointHoverRadius = 6; ds.borderWidth = 2;
+      });
+      new Chart(elM, {
+        type: 'line',
+        data: { labels: m.labels, datasets: m.datasets },
+        plugins: [negativeZoneBg],
+        options: Object.assign({}, COMMON, {
+          scales: {
+            y: { ticks: { callback: function(v){ return v.toFixed(0) + '%'; }, font:{size:11} }, grid: { color: '#eceff4' } },
+            x: { grid: { display: false }, ticks: {font:{size:11}} }
           },
-          x: { stacked: true, grid: { display: false }, ticks: {font:{size:11}} }
-        },
-        plugins: Object.assign({}, COMMON.plugins, {
-          tooltip: Object.assign({}, COMMON.plugins.tooltip, {
-            callbacks: {
-              label: function(ctx){
-                return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + bUnit;
-              },
-              footer: function(items){
-                var sum = items.reduce(function(s, i){ return s + i.parsed.y; }, 0);
-                return '자산총계 ≈ ' + sum.toFixed(2) + bUnit;
-              }
-            }
+          plugins: Object.assign({}, COMMON.plugins, {
+            tooltip: Object.assign({}, COMMON.plugins.tooltip, {
+              callbacks: { label: function(ctx){ return ctx.dataset.label + ': ' + fmtPct(ctx.parsed.y); } }
+            })
           })
         })
-      })
-    });
+      });
+    }
+
+    // 3) BS stacked
+    var b = payload.bs;
+    var elB = document.getElementById('chart-bs-' + fs);
+    if (b && elB) {
+      var bUnit = b.unit || '조원';
+      new Chart(elB, {
+        type: 'bar',
+        data: { labels: b.labels, datasets: b.datasets },
+        options: Object.assign({}, COMMON, {
+          scales: {
+            y: { stacked: true, ticks: { callback: function(v){ return v.toLocaleString('ko-KR') + bUnit; }, font:{size:11} }, grid: { color: '#eceff4' } },
+            x: { stacked: true, grid: { display: false }, ticks: {font:{size:11}} }
+          },
+          plugins: Object.assign({}, COMMON.plugins, {
+            tooltip: Object.assign({}, COMMON.plugins.tooltip, {
+              callbacks: {
+                label: function(ctx){ return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + bUnit; },
+                footer: function(items){
+                  var sum = items.reduce(function(s, i){ return s + i.parsed.y; }, 0);
+                  return '자산총계 ≈ ' + sum.toFixed(2) + bUnit;
+                }
+              }
+            })
+          })
+        })
+      });
+    }
   }
 
-  // ── 4. 지분 도넛
+  // 모든 FS 차트 초기화 (hidden view 도 그대로 그려두면 토글 시 즉시 표시)
+  ['cfs', 'ofs'].forEach(initFsCharts);
+
+  // 지분 도넛 (공통)
   var o = CD.ownership;
-  if (o && document.getElementById('chart-ownership')) {
-    new Chart(document.getElementById('chart-ownership'), {
+  var elO = document.getElementById('chart-ownership');
+  if (o && elO) {
+    new Chart(elO, {
       type: 'doughnut',
       data: { labels: o.labels, datasets: o.datasets },
       options: Object.assign({}, COMMON, {
@@ -1225,16 +1269,28 @@ CHART_INIT_JS = r"""
         plugins: Object.assign({}, COMMON.plugins, {
           legend: { position: 'right', labels: { usePointStyle: true, boxWidth: 8, font:{size:11} } },
           tooltip: Object.assign({}, COMMON.plugins.tooltip, {
-            callbacks: {
-              label: function(ctx){
-                return ctx.label + ': ' + ctx.parsed.toFixed(2) + '%';
-              }
-            }
+            callbacks: { label: function(ctx){ return ctx.label + ': ' + ctx.parsed.toFixed(2) + '%'; } }
           })
         })
       })
     });
   }
+
+  // FS 토글 버튼 핸들러
+  document.querySelectorAll('.fs-toggle .tab').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      if (btn.hasAttribute('disabled') || btn.classList.contains('disabled')) return;
+      var fs = btn.dataset.fs;
+      var section = btn.closest('.fin-card');
+      if (!section) return;
+      section.querySelectorAll('.tab').forEach(function(b){
+        b.classList.toggle('active', b.dataset.fs === fs);
+      });
+      section.querySelectorAll('.fs-view').forEach(function(v){
+        v.style.display = v.dataset.fs === fs ? '' : 'none';
+      });
+    });
+  });
 })();
 """
 
@@ -1252,12 +1308,22 @@ def write_html(
     cnt = SectionCounter()
     generated = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # Chart.js 데이터 — 단계 3에서 실제 스크립트 주입
+    # Chart.js 데이터 — CFS/OFS 각각, ownership 은 공통
+    from types import SimpleNamespace
+    def _fs_payload(annual, latest_q):
+        if not annual and not latest_q:
+            return None
+        view = SimpleNamespace(annual=annual, latest_quarter=latest_q)
+        return {
+            "performance": cd.build_performance_chart(view),
+            "margin":      cd.build_margin_chart(view),
+            "bs":          cd.build_bs_chart(view),
+        }
+
     chart_payload: Dict[str, Any] = {
-        "performance": cd.build_performance_chart(fin) if fin.annual or fin.latest_quarter else None,
-        "margin":      cd.build_margin_chart(fin)      if fin.annual or fin.latest_quarter else None,
-        "bs":          cd.build_bs_chart(fin)          if fin.annual or fin.latest_quarter else None,
-        "ownership":   cd.build_ownership_chart(shareholders),
+        "cfs":       _fs_payload(fin.annual_cfs, fin.latest_quarter_cfs),
+        "ofs":       _fs_payload(fin.annual_ofs, fin.latest_quarter_ofs),
+        "ownership": cd.build_ownership_chart(shareholders),
     }
 
     body = (

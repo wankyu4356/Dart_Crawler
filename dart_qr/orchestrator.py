@@ -57,14 +57,20 @@ def _fill_da_from_body(
     감사보고서/사업보고서 1건의 본문을 Claude 에 던져 [{year, dep, amort}]
     배열로 추출. 해당 연도의 YearFin.values 에 주입 + EBITDA 파생 재계산.
     """
+    # 1) raw_rows 피벗 (무비용)
+    raw_filled = fin_mod.fill_da_from_raw(fin)
+    if raw_filled:
+        log(f"  D&A raw 피벗: {raw_filled}개 항목 보강 (API raw 재활용, 무비용)")
+
     missing_years = [
         y.year for y in fin.annual
         if y.values.get("da") is None
     ]
     if not missing_years:
+        log(f"  D&A 모든 연도 확보 — LLM fallback 생략")
         return
-    log(f"  D&A 보강: {len(missing_years)}개 연도 누락 "
-        f"({', '.join(str(y) for y in missing_years)}) → 본문 LLM 추출 시도")
+    log(f"  D&A 본문 LLM fallback: {len(missing_years)}개 연도 누락 "
+        f"({', '.join(str(y) for y in missing_years)})")
 
     candidates = biz_mod.pick_source_reports(
         discs, is_listed, corp_code, log=log, limit=4,

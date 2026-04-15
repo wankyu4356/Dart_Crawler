@@ -69,9 +69,13 @@ def pick_source_reports(
     out: List[Dict[str, Any]] = []
     if is_listed:
         cands = [d for d in discs if _report_priority(d.report_nm) > 0]
-        if not cands:
+        # 연결감사보고서 등 pblntf_ty='F' + 이름에 '감사보고서' 포함
+        audit_cands = [d for d in discs
+                       if (d.pblntf_ty or "") == "F"
+                       and "감사보고서" in (d.report_nm or "")]
+        if not cands and not audit_cands:
             if log:
-                log("  (정기보고서 없음)")
+                log("  (정기보고서 / 감사보고서 없음)")
             return []
         def _fy_num(d):
             m = re.search(r"\((\d{4})[.\-/년]?\s*\d{1,2}", d.report_nm or "")
@@ -87,6 +91,15 @@ def pick_source_reports(
             1 if _is_amended(d.report_nm) else 0,
             -int(str(d.rcept_dt or "0").replace("-", "") or "0"),
         ))
+        # 연결감사보고서 > 별도감사보고서, 최신 접수일 우선
+        audit_cands.sort(key=lambda d: (
+            0 if "연결" in (d.report_nm or "") else 1,
+            -_fy_num(d),
+            1 if _is_amended(d.report_nm) else 0,
+            -int(str(d.rcept_dt or "0").replace("-", "") or "0"),
+        ))
+        # 정기보고서 → 감사보고서 순
+        cands = cands + audit_cands
         # 같은 결산년도·기본보고서명 조합은 최대 2건(원본+정정)까지만
         seen: Dict[tuple, int] = {}
         for d in cands:

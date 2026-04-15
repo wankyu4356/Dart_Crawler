@@ -188,11 +188,16 @@ class YearFin:
 
 @dataclass
 class FinancialsBundle:
+    # 기본 (CFS 우선, 없는 연도는 OFS 로 보강된 hybrid)
     annual: List[YearFin] = field(default_factory=list)
     latest_quarter: Optional[YearFin] = None
+    # 신규 — 연결·별도 순수 세트 (HTML 토글 UI 용)
+    annual_cfs: List[YearFin] = field(default_factory=list)
+    annual_ofs: List[YearFin] = field(default_factory=list)
+    latest_quarter_cfs: Optional[YearFin] = None
+    latest_quarter_ofs: Optional[YearFin] = None
     indicators: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    # fnlttSinglAcntAll 응답 raw rows — Excel 상세 시트용 (계정별 전체 시계열)
-    # 각 row 에 `_call_year`, `_reprt_label` 메타 필드 부여
+    # fnlttSinglAcntAll 응답 raw rows — Excel 상세 시트 + D&A raw 피벗용
     raw_rows: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -390,6 +395,101 @@ def _fetch_full_with_fallback(
     return list(by_key.values()), fs_used
 
 
+def _classify_da_line(aid: str, nm: str) -> Optional[str]:
+    """D&A 라인 분류. 반환: 'da_total' / 'dep' / 'amort' / None."""
+    if _id_is_excluded(aid):
+        return None
+    if ("사용권" in nm or "리스자산" in nm) and ("상각" in nm or "감가" in nm):
+        return None
+    # id prefix 우선
+    if _id_has_any(aid, DA_TOTAL_ID_PREFIXES) or aid in DA_ID_TOTAL:
+        return "da_total"
+    if _id_has_any(aid, DEP_ID_PREFIXES) or aid in DEP_IDS:
+        return "dep"
+    if _id_has_any(aid, AMORT_ID_PREFIXES) or aid in AMORT_IDS:
+        return "amort"
+    # name 패턴
+    if any(p in nm for p in DEP_EXPLICIT_PATS):
+        return "dep"
+    if DEP_GENERAL in nm and not any(ex in nm for ex in DEP_EXCL_WORDS):
+        return "dep"
+    if any(p in nm for p in AMORT_PATS):
+        return "amort"
+    return None
+
+
+def fill_da_from_raw(fin: "FinancialsBundle") -> int:
+    """fin.raw_rows 를 연도축으로 재취합해 **누락 연도**의 dep/amort/da 를 채움.
+
+    `fnlttSinglAcntAll` 이 여러 연도 각각 호출되며 각 호출에 당기/전기/전전기
+    3년치 CF 라인이 함께 돌아오므로, 단일 보고서 파싱 시점엔 놓친 과거 연도를
+    raw_rows 전수 피벗으로 **무비용** 복구한다.
+
+    같은 (year, kind) 에 대해 여러 후보값이 나오면 최대 절댓값 채택.
+    annual / annual_cfs / annual_ofs 세 리스트 모두에 적용.
+
+    반환: 새로 채워진 (YearFin, fs_set) 카운트.
+    """
+    pivot: Dict[int, Dict[str, float]] = {}
+    for r in fin.raw_rows:
+        sj = (r.get("sj_div") or "").upper()
+        if sj not in ("CF", "IS", "CIS"):
+            continue
+        aid = (r.get("account_id") or "").strip()
+        nm_raw = r.get("account_nm") or ""
+        nm = nm_raw.replace(" ", "").replace("\u3000", "")
+        kind = _classify_da_line(aid, nm)
+        if kind is None:
+            continue
+        call_year = r.get("_call_year")
+        if not isinstance(call_year, int):
+            continue
+        for period, yoff in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
+            amt = _to_num(r.get(f"{period}_amount"))
+            if amt is None:
+                continue
+            year = call_year - yoff
+            slot = pivot.setdefault(year, {})
+            av = abs(amt)
+            if av > slot.get(kind, 0):
+                slot[kind] = av
+
+    filled = 0
+    targets: List[List["YearFin"]] = [fin.annual]
+    # annual_cfs / annual_ofs 가 있으면 각각도 적용
+    for attr in ("annual_cfs", "annual_ofs"):
+        seq = getattr(fin, attr, None)
+        if seq:
+            targets.append(seq)
+
+    for seq in targets:
+        for yf in seq:
+            if yf.values.get("da") is not None:
+                continue
+            p = pivot.get(yf.year)
+            if not p:
+                continue
+            if p.get("da_total"):
+                yf.values["da"] = p["da_total"]
+                # dep/amort 개별값은 덮어쓰지 않음
+            else:
+                dep = p.get("dep")
+                amort = p.get("amort")
+                if dep is None and amort is None:
+                    continue
+                yf.values["dep"] = dep
+                yf.values["amort"] = amort
+                yf.values["da"] = (dep or 0.0) + (amort or 0.0)
+            op = yf.values.get("op_income")
+            rev = yf.values.get("revenue")
+            if op is not None:
+                yf.values["ebitda"] = op + yf.values["da"]
+                if rev:
+                    yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+            filled += 1
+    return filled
+
+
 def fetch_annual_financials(
     corp_code: str,
     years_back: int = 4,
@@ -494,32 +594,116 @@ def fetch_indicators(
     return out
 
 
+def _fetch_fs_specific_annual(
+    corp_code: str, fs_div: str, years_back: int,
+    ref_year: int, raw_out: List[Dict[str, Any]],
+) -> List[YearFin]:
+    """한 FS (CFS 또는 OFS) 만 호출해 연간 YearFin 리스트 반환.
+
+    `_fetch_full_with_fallback` 는 CFS+OFS 를 병합하지만, 이 함수는 각각
+    순수 결과가 필요한 경우(HTML 토글) 를 위해 단독 호출.
+    """
+    annual: List[YearFin] = []
+    seen: set[int] = set()
+    for y in range(ref_year, ref_year - years_back - 2, -1):
+        if len(annual) >= years_back:
+            break
+        rows = api.fnltt_singl_acnt_all(corp_code, str(y), REPRT_CODE["FY"], fs_div=fs_div)
+        if not rows:
+            continue
+        currency = next((r.get("currency") for r in rows if r.get("currency")), "KRW")
+        for r in rows:
+            rr = dict(r)
+            rr["_call_year"] = y
+            rr["_reprt_label"] = "사업보고서"
+            rr["_fs_div"] = fs_div
+            raw_out.append(rr)
+        for period, yoff in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
+            yr = y - yoff
+            if yr in seen:
+                continue
+            vals = _extract_year_values(rows, period)
+            if any(v is not None for v in vals.values()):
+                annual.append(YearFin(
+                    year=yr, reprt_code=REPRT_CODE["FY"], reprt_label="사업보고서",
+                    fs_div=fs_div, currency=currency, values=vals,
+                ))
+                seen.add(yr)
+    annual.sort(key=lambda f: f.year, reverse=True)
+    return annual[:years_back]
+
+
+def _fetch_fs_specific_quarter(
+    corp_code: str, fs_div: str, ref_year: int,
+    raw_out: List[Dict[str, Any]],
+) -> Optional[YearFin]:
+    """한 FS (CFS/OFS) 만 호출해 최신 분기/반기 YearFin 반환."""
+    for y in (ref_year, ref_year - 1):
+        for key, label in QUARTER_PRIORITY:
+            rows = api.fnltt_singl_acnt_all(corp_code, str(y), REPRT_CODE[key], fs_div=fs_div)
+            if not rows:
+                continue
+            for r in rows:
+                rr = dict(r)
+                rr["_call_year"] = y
+                rr["_reprt_label"] = label
+                rr["_fs_div"] = fs_div
+                raw_out.append(rr)
+            vals = _extract_year_values(rows, "thstrm")
+            if any(v is not None for v in vals.values()):
+                currency = next((r.get("currency") for r in rows if r.get("currency")), "KRW")
+                return YearFin(
+                    year=y, reprt_code=REPRT_CODE[key], reprt_label=label,
+                    fs_div=fs_div, currency=currency, values=vals,
+                )
+    return None
+
+
+def _merge_best(
+    cfs: List[YearFin], ofs: List[YearFin], years_back: int,
+) -> List[YearFin]:
+    """CFS 우선 + 없는 연도는 OFS 로 보강 (기존 `annual` 호환)."""
+    by_year: Dict[int, YearFin] = {y.year: y for y in cfs}
+    for y in ofs:
+        if y.year not in by_year:
+            by_year[y.year] = y
+    return sorted(by_year.values(), key=lambda y: y.year, reverse=True)[:years_back]
+
+
 def fetch_all(
     corp_code: str,
     years_back: int = 4,
     ref_year: Optional[int] = None,
 ) -> FinancialsBundle:
+    if ref_year is None:
+        ref_year = date.today().year
+
     raw_rows: List[Dict[str, Any]] = []
-    annual = fetch_annual_financials(
-        corp_code, years_back=years_back, ref_year=ref_year, raw_out=raw_rows,
-    )
-    latest_q = fetch_latest_quarterly(
-        corp_code, ref_year=ref_year, raw_out=raw_rows,
-    )
+    # 1) CFS / OFS 각각 순수 수집
+    cfs_annual = _fetch_fs_specific_annual(corp_code, "CFS", years_back, ref_year, raw_rows)
+    ofs_annual = _fetch_fs_specific_annual(corp_code, "OFS", years_back, ref_year, raw_rows)
+    cfs_q = _fetch_fs_specific_quarter(corp_code, "CFS", ref_year, raw_rows)
+    ofs_q = _fetch_fs_specific_quarter(corp_code, "OFS", ref_year, raw_rows)
+
+    # 2) best = CFS 우선 + OFS 로 빠진 연도 보강 (기존 annual 호환)
+    best_annual = _merge_best(cfs_annual, ofs_annual, years_back)
+    best_q = cfs_q or ofs_q
 
     indicators: Dict[str, Dict[str, Any]] = {}
-    if annual:
-        most = annual[0]
+    if best_annual:
+        most = best_annual[0]
         ind = fetch_indicators(corp_code, str(most.year), most.reprt_code)
         if ind:
             indicators[f"{most.year} 사업보고서"] = ind
-    if latest_q:
-        ind = fetch_indicators(corp_code, str(latest_q.year), latest_q.reprt_code)
+    if best_q:
+        ind = fetch_indicators(corp_code, str(best_q.year), best_q.reprt_code)
         if ind:
-            indicators[f"{latest_q.year} {latest_q.reprt_label}"] = ind
+            indicators[f"{best_q.year} {best_q.reprt_label}"] = ind
 
     return FinancialsBundle(
-        annual=annual, latest_quarter=latest_q,
+        annual=best_annual, latest_quarter=best_q,
+        annual_cfs=cfs_annual, annual_ofs=ofs_annual,
+        latest_quarter_cfs=cfs_q, latest_quarter_ofs=ofs_q,
         indicators=indicators, raw_rows=raw_rows,
     )
 
