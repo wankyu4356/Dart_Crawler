@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional
 
 from . import audit_report as ar
+from . import audit_fs_parser as afp
 from . import financials as fin_mod
 from . import shareholders as sh_mod
 from . import llm as llm_mod
@@ -94,14 +95,14 @@ def fetch_financials(
     """
     # 1) 표준 API 시도 (외감 중 일부 응답)
     std = fin_mod.fetch_all(corp_code, years_back=years_back)
-    if len(std.annual) >= min(years_back, 2):
-        log(f"  → 표준 API로 재무 확보 ({len(std.annual)}년)")
-        return std
+    has_std = len(std.annual) >= min(years_back, 2)
+    if has_std:
+        log(f"  → 표준 API로 재무 확보 ({len(std.annual)}년) — 감사보고서 표도 병행 수집")
+    else:
+        log(f"  → 표준 API 응답 부족 ({len(std.annual)}년). 감사보고서 파싱으로 재무 복원")
 
-    log(f"  → 표준 API 응답 부족 ({len(std.annual)}년). 감사보고서 파싱으로 보강")
     prefetched = ar.disclosures_to_rows(disclosures) if disclosures else None
     # 한 감사보고서가 당기/전기/전전기 3년 비교재무 포함.
-    # years_back=3 → 1건, years_back=5 → 2건, years_back=7 → 3건...
     needed = max(1, (years_back + 2) // 3)
     reports = ar.find_latest_audit_reports(
         corp_code, n=needed, prefetched_rows=prefetched, log=log,
@@ -113,38 +114,70 @@ def fetch_financials(
         log(f"  → 감사보고서 없음. 표준 결과 그대로 반환")
         return std
 
-    merged_by_year: Dict[int, YearFin] = {y.year: y for y in std.annual}
+    # ─── HTML 표 파싱 (LLM 비의존) — 원본 재무제표 표를 모두 수집 ────
+    all_tables: List[Any] = []
+    llm_merged: Dict[int, YearFin] = {y.year: y for y in std.annual}
     for r in reports:
         rcept_no = r.get("rcept_no") or ""
         if not rcept_no:
             continue
         mode = r.get("_fin_mode", "CFS")
-        log(f"    감사보고서({mode}) 다운로드: {rcept_no} ({r.get('report_nm','')})")
-        body = ar.fetch_audit_body(rcept_no)
-        if not body:
-            log(f"    본문 비어있음. 스킵")
-            continue
-        log(f"    본문 {len(body):,}자 → Claude 재무 추출 중")
-        try:
-            parsed = llm_mod.extract_financials_from_audit(body, client=client)
-        except Exception as exc:  # noqa: BLE001
-            log(f"    LLM 오류: {exc}")
-            continue
-        for d in parsed or []:
-            yf = _yearfin_from_llm(d)
-            if yf is None:
-                continue
-            # fs_div 는 LLM 답변 우선, 없으면 보고서 모드로 주입
-            if not yf.fs_div or yf.fs_div not in ("CFS", "OFS"):
-                yf.fs_div = mode
-            if yf.year in merged_by_year:
-                continue
-            merged_by_year[yf.year] = yf
+        log(f"    감사보고서({mode}) 표 파싱: {rcept_no} ({r.get('report_nm','')})")
+        tables = afp.fetch_and_parse_audit_tables(
+            rcept_no, report_nm=r.get("report_nm", ""), log=log,
+        )
+        # 보고서 모드(CFS/OFS) 로 fs_div 덮어쓰기 — 제목만으로 판정 실패 케이스 보강
+        for t in tables:
+            if not t.fs_div or t.fs_div == "UNKNOWN":
+                t.fs_div = mode
+        all_tables.extend(tables)
 
-    annual = sorted(merged_by_year.values(), key=lambda y: y.year, reverse=True)[:years_back]
-    log(f"  → 최종 {len(annual)}개년 재무 확보")
-    return FinancialsBundle(annual=annual, latest_quarter=std.latest_quarter,
-                            indicators=std.indicators)
+        # 2차: LLM 사용 가능하면 감사보고서 본문도 분석 (보강용)
+        if client is not None:
+            body = ar.fetch_audit_body(rcept_no)
+            if body:
+                log(f"    본문 {len(body):,}자 → Claude 재무 보강")
+                try:
+                    parsed = llm_mod.extract_financials_from_audit(body, client=client)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"    LLM 오류: {exc}")
+                    parsed = []
+                for d in parsed or []:
+                    yf = _yearfin_from_llm(d)
+                    if yf is None:
+                        continue
+                    if not yf.fs_div or yf.fs_div not in ("CFS", "OFS"):
+                        yf.fs_div = mode
+                    if yf.year in llm_merged:
+                        continue
+                    llm_merged[yf.year] = yf
+
+    # ─── 표 기반 YearFin 생성 (연결/별도 각각) ────────────────────────
+    cfs_years = afp.build_year_fins_from_tables(all_tables, fs_div="CFS")
+    ofs_years = afp.build_year_fins_from_tables(all_tables, fs_div="OFS")
+
+    # hybrid annual: CFS 우선, 빠진 연도는 OFS → LLM → std 순으로 보강
+    merged_by_year: Dict[int, YearFin] = {}
+    for y in cfs_years:
+        merged_by_year.setdefault(y.year, y)
+    for y in ofs_years:
+        merged_by_year.setdefault(y.year, y)
+    for y, yf in llm_merged.items():
+        merged_by_year.setdefault(y, yf)
+
+    annual = sorted(
+        merged_by_year.values(), key=lambda y: y.year, reverse=True,
+    )[:years_back]
+    log(f"  → 최종 {len(annual)}개년 재무 · 원본 표 {len(all_tables)}건 수집")
+    return FinancialsBundle(
+        annual=annual,
+        latest_quarter=std.latest_quarter,
+        annual_cfs=sorted(cfs_years, key=lambda y: y.year, reverse=True)[:years_back],
+        annual_ofs=sorted(ofs_years, key=lambda y: y.year, reverse=True)[:years_back],
+        indicators=std.indicators,
+        raw_rows=std.raw_rows,
+        raw_fs_tables=all_tables,
+    )
 
 
 def fetch_governance(

@@ -617,6 +617,108 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
     ws.column_dimensions[get_column_letter(5 + len(years))].width = 8
 
 
+def _write_raw_fs(wb: Workbook, fin: FinancialsBundle) -> None:
+    """비상장 감사보고서에서 파싱한 원본 재무제표 표를 빠짐없이 덤프.
+
+    `fin.raw_fs_tables` 에 `audit_fs_parser.RawFsTable` 객체가 있을 때만 생성.
+    하나의 시트 "재무_원본" 안에 섹션 헤더(재무상태표/손익계산서/...) + 원문
+    표를 그대로 기록. 금액은 `unit_multiplier` 곱해 원 단위로 정규화.
+    """
+    tables = getattr(fin, "raw_fs_tables", None) or []
+    if not tables:
+        return
+
+    ws = wb.create_sheet("재무_원본")
+    ws.sheet_view.showGridLines = False
+
+    # 상단 타이틀
+    ws["A1"] = "감사보고서 원본 재무제표 (HTML 표 파싱)"
+    ws["A1"].font = Font(bold=True, size=13, color=_THEME_HEX, name="Calibri")
+    ws.row_dimensions[1].height = 22
+    ws["A2"] = "단위: 원 (표별 단위를 자동 환산)"
+    ws["A2"].font = NOTE_FONT
+
+    row_cursor = 4
+
+    # 통계 순서 (BS → IS/CIS → CF → SCE → UNKNOWN)
+    ORDER = ["BS", "IS", "CIS", "CF", "SCE", "UNKNOWN"]
+
+    def _write_table_block(t) -> int:
+        nonlocal row_cursor
+        # 섹션 제목
+        title_cell = ws.cell(row=row_cursor, column=1,
+                             value=f"[{t.statement_label or t.statement}] "
+                                   f"({t.fs_div}) {t.report_nm or ''}")
+        title_cell.font = Font(bold=True, color="FFFFFF", size=12, name="Calibri")
+        title_cell.fill = PatternFill("solid", fgColor=_THEME_HEX)
+        title_cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+        ws.row_dimensions[row_cursor].height = 22
+        # 넉넉히 10개 열 머지
+        n_cols = max(len(t.headers) or 0, max((len(r) for r in t.rows), default=0), 5)
+        ws.merge_cells(start_row=row_cursor, start_column=1,
+                       end_row=row_cursor, end_column=n_cols)
+        row_cursor += 1
+
+        # 단위 · 원문 제목
+        meta_bits = []
+        if t.unit and t.unit != "원":
+            meta_bits.append(f"원문 단위: {t.unit} (원 기준 ×{int(t.unit_multiplier):,})")
+        if t.title:
+            # 제목은 노이즈 가능 — 200자 cap
+            meta_bits.append(f"표 제목 단서: {t.title[:120]}")
+        if meta_bits:
+            m = ws.cell(row=row_cursor, column=1, value=" · ".join(meta_bits))
+            m.font = NOTE_FONT
+            m.alignment = Alignment(horizontal="left")
+            ws.merge_cells(start_row=row_cursor, start_column=1,
+                           end_row=row_cursor, end_column=n_cols)
+            row_cursor += 1
+
+        # 헤더
+        if t.headers:
+            for c_idx, header in enumerate(t.headers[:n_cols], 1):
+                cell = ws.cell(row=row_cursor, column=c_idx, value=header)
+            _style_header(ws, row_cursor, min(len(t.headers), n_cols))
+            row_cursor += 1
+
+        # 데이터 행 — 금액으로 파싱 가능한 셀은 숫자로(원 단위), 아니면 문자열
+        from .audit_fs_parser import _to_amount  # 지연 import (순환 방지)
+        for row in t.rows:
+            for c_idx, cell_val in enumerate(row[:n_cols], 1):
+                amt = _to_amount(cell_val)
+                cell = ws.cell(row=row_cursor, column=c_idx)
+                if amt is not None:
+                    cell.value = amt * t.unit_multiplier
+                    cell.number_format = KRW_FMT
+                    cell.alignment = RIGHT_ALIGN
+                else:
+                    cell.value = cell_val
+                    cell.alignment = LEFT_ALIGN
+                cell.font = BODY_FONT
+                cell.border = THIN_BORDER
+            row_cursor += 1
+
+        row_cursor += 2   # 블록 간 공백
+        return row_cursor
+
+    # 정렬: 재무상태표 먼저, 그 다음 손익/포괄손익/현금흐름/자본변동 순
+    ordered = sorted(
+        tables,
+        key=lambda t: (
+            ORDER.index(t.statement) if t.statement in ORDER else 99,
+            0 if t.fs_div == "CFS" else 1,
+        ),
+    )
+    for t in ordered:
+        _write_table_block(t)
+
+    # 열 너비
+    ws.column_dimensions["A"].width = 34
+    for i in range(2, 12):
+        ws.column_dimensions[get_column_letter(i)].width = 18
+    ws.freeze_panes = "B4"
+
+
 def _write_indicators(wb: Workbook, fin: FinancialsBundle) -> None:
     if not fin.indicators:
         return
@@ -1046,6 +1148,7 @@ def write_excel(
     _write_footnotes(wb, footnotes)
     _write_financials(wb, fin)
     _write_fin_detail(wb, fin)
+    _write_raw_fs(wb, fin)
     _write_indicators(wb, fin)
     _write_shareholders(wb, shareholders)
     _write_disclosure_list(wb, disclosures)

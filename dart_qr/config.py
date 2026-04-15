@@ -60,4 +60,4 @@ DART_VIEWER_URL = "https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
 
 # 문의 채널 (GUI/리포트 전반에 노출)
 CONTACT_EMAIL = "wankyu.kim@yonsei.ac.kr"
-CONTACT_NAME = "완규의 딸깍공장"
+CONTACT_NAME = "Company Snapshot"

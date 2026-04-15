@@ -11,7 +11,7 @@ from .config import CONTACT_EMAIL
 
 
 class Splash:
-    def __init__(self, title: str = "완규의 딸깍공장") -> None:
+    def __init__(self, title: str = "Company Snapshot") -> None:
         try:
             import tkinter as tk
         except ImportError:
@@ -28,7 +28,7 @@ class Splash:
             pass
         self.root.configure(bg="#1a237e")
 
-        tk.Label(self.root, text="완규의 딸깍공장",
+        tk.Label(self.root, text="Company Snapshot",
                  fg="#fff", bg="#1a237e",
                  font=("Segoe UI", 16, "bold")).pack(pady=(16, 2))
         tk.Label(self.root, text="DART 공시 자동 분석",

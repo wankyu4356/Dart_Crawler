@@ -59,7 +59,7 @@ def _open_path(path: str) -> None:
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("완규의 딸깍공장 — DART 공시 자동 분석")
+        self.title("Company Snapshot — DART 공시 자동 분석")
         self.geometry("900x760")
         self.minsize(820, 640)
         self.configure(bg=BG)
@@ -174,7 +174,7 @@ class App(tk.Tk):
         hero_wrap.pack(fill="x")
         hero = ttk.Frame(hero_wrap, style="Hero.TFrame", padding=(32, 24, 32, 22))
         hero.pack(fill="x")
-        ttk.Label(hero, text="완규의 딸깍공장",
+        ttk.Label(hero, text="Company Snapshot",
                   style="Hero.TLabel").pack(anchor="w")
         ttk.Label(hero, text="DART 공시 자동 분석 · 클릭 한 번으로 기업 리포트",
                   style="HeroSub.TLabel").pack(anchor="w", pady=(4, 10))
@@ -294,7 +294,7 @@ class App(tk.Tk):
                            padding=(20, 10, 20, 10))
         status.pack(fill="x", side="bottom")
         ttk.Label(status,
-                  text=f"완규의 딸깍공장   v{__version__}",
+                  text=f"Company Snapshot   v{__version__}",
                   style="Status.TLabel").pack(side="left")
         ttk.Label(status, text="│", style="Status.TLabel").pack(side="left", padx=12)
         ttk.Label(status, text="문의:",
@@ -307,7 +307,7 @@ class App(tk.Tk):
         self.cmb_company.focus_set()
         self.bind("<Return>", lambda e: self._start())
 
-        self._log("완규의 딸깍공장 준비 완료.  회사명을 입력하고 [▶ 분석 시작] 을 누르세요.")
+        self._log("Company Snapshot 준비 완료.  회사명을 입력하고 [▶ 분석 시작] 을 누르세요.")
 
     # ── 회사명 후보 autocomplete ─────────────────────────────────────
     def _on_company_key(self, event) -> None:

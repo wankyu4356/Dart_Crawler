@@ -1368,7 +1368,7 @@ def write_html(
 <html lang="ko"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>완규의 딸깍공장 — {_esc(profile.corp_name)}</title>
+<title>Company Snapshot — {_esc(profile.corp_name)}</title>
 <script src="{CHART_JS_CDN}"></script>
 <style>{CSS}</style>
 </head><body>

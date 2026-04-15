@@ -215,6 +215,9 @@ class FinancialsBundle:
     indicators: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     # fnlttSinglAcntAll 응답 raw rows — Excel 상세 시트 + D&A raw 피벗용
     raw_rows: List[Dict[str, Any]] = field(default_factory=list)
+    # 비상장 감사보고서 HTML 에서 파싱한 원본 재무제표 표 (RawFsTable 객체)
+    # 타입은 Any 로 선언해 순환 import 방지 (audit_fs_parser.RawFsTable)
+    raw_fs_tables: List[Any] = field(default_factory=list)
 
 
 # ── 파싱 / 추출 ──────────────────────────────────────────────────────────
