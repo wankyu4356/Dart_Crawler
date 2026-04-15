@@ -26,8 +26,8 @@ def _label_of(y: YearFin) -> str:
 
 
 def _annual_then_quarter(fin: FinancialsBundle) -> List[YearFin]:
-    """그래프 X축 순서: 오래된 연도 → 최신 연도 → 최신 분기."""
-    yrs = sorted(fin.annual, key=lambda f: f.year)
+    """그래프 X축 순서: 과거 → 최신 (증자순) + 최신 분기."""
+    yrs = sorted(fin.annual, key=lambda f: f.year)  # 오래된 → 최신
     if fin.latest_quarter is not None:
         yrs.append(fin.latest_quarter)
     return yrs
@@ -94,9 +94,10 @@ def build_margin_chart(fin: FinancialsBundle) -> Dict[str, Any]:
 
 
 _SCALE_LEVELS = [
-    (10e12, 1e12, "조원"),   # 10조 이상이면 조원
-    (1e8,   1e8,  "억원"),   # 1억 이상이면 억원
-    (1,     1,    "원"),      # 그 외 원 단위
+    # (threshold, divisor, unit)  — threshold 이상이면 해당 단위 적용
+    (1e12, 1e12, "조원"),   # 1조 이상이면 조원 (소수점 2자리 유효)
+    (1e8,  1e8,  "억원"),   # 1억 이상이면 억원
+    (1,    1,    "원"),
 ]
 
 

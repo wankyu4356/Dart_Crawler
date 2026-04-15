@@ -3,11 +3,18 @@
 
 `run_quickreport()` 가 1건의 회사에 대해 수집→LLM 분석→리포트 생성을 수행.
 GUI 는 이 함수를 스레드에서 호출만 하면 된다.
+
+상세 로그: 출력 폴더에 `_log_<회사>_<타임스탬프>.txt` 자동 생성. GUI 와
+동시에 기록되어 문제 발생 시 troubleshoot 용으로 사용.
 """
 from __future__ import annotations
 import os
+import platform
+import sys
+import traceback
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from typing import Callable, Optional
 from typing import Callable, Optional
 
 from . import business as biz_mod
@@ -46,6 +53,137 @@ class RunResult:
     corp_name: str
     n_disclosures: int
     n_analyzed: int
+
+
+def _validate_financials(fin, log: LogFn) -> Dict[str, Any]:
+    """재무 검수 — 필수 키(revenue, op_income, net_income, da, ebitda) 의
+    연도 커버리지 계산. 로그에 상세 진단 출력."""
+    import json as _json
+    report: Dict[str, Any] = {"annual": {}, "cfs": {}, "ofs": {}}
+
+    def _coverage(seq, key):
+        if not seq:
+            return (0, 0)
+        filled = sum(1 for y in seq if y.values.get(key) is not None)
+        return (filled, len(seq))
+
+    keys = ["revenue", "op_income", "net_income", "da", "ebitda",
+            "total_assets", "total_liabilities", "total_equity"]
+    targets = {
+        "annual":     fin.annual,
+        "cfs":        fin.annual_cfs,
+        "ofs":        fin.annual_ofs,
+    }
+    missing_by_key: Dict[str, List[int]] = {}
+    for bundle_name, seq in targets.items():
+        if not seq:
+            continue
+        for k in keys:
+            filled, total = _coverage(seq, k)
+            report[bundle_name][k] = f"{filled}/{total}"
+            if bundle_name == "annual" and filled < total:
+                missing_by_key.setdefault(k, []).extend(
+                    y.year for y in seq if y.values.get(k) is None
+                )
+
+    log(f"  ▸ 재무 커버리지 검수: "
+        + ", ".join(f"{k}={report.get('annual', {}).get(k, '-')}"
+                    for k in ["revenue", "op_income", "net_income", "da", "ebitda"]))
+    if missing_by_key:
+        details = []
+        for k, yrs in missing_by_key.items():
+            details.append(f"{k}={sorted(set(yrs))}")
+        log(f"  ⚠ 누락 연도: " + " / ".join(details))
+    return {"report": report, "missing_by_key": missing_by_key}
+
+
+def _fill_da_per_year(
+    fin, discs, corp_code: str, is_listed: bool,
+    client, model: Optional[str], log: LogFn,
+) -> int:
+    """누락 연도별로 해당 연도 사업보고서를 찾아 LLM 으로 개별 추출.
+
+    discs 에서 report_nm 에 결산연도가 매칭되는 사업보고서를 우선 탐색.
+    해당 rcept_no 본문을 다운로드해 slice_da_relevant 후 Claude 호출.
+    """
+    import re as _re
+    missing = [y for y in fin.annual if y.values.get("da") is None]
+    if not missing:
+        return 0
+    log(f"  ▸ 연도별 D&A 전용 LLM 재시도 ({len(missing)}개년)")
+    from . import disclosures as _d
+
+    def _find_report_for_year(year: int):
+        """해당 연도 결산의 사업보고서 rcept_no 반환 (정정본 배제)."""
+        # report_nm 에 "(YYYY.12)" 또는 "(YYYY.N)" 포함
+        cand = []
+        for d in discs:
+            nm = d.report_nm or ""
+            if "사업보고서" not in nm:
+                continue
+            m = _re.search(r"\((\d{4})[.\-/]?\s*\d{1,2}", nm)
+            if not m:
+                continue
+            if int(m.group(1)) != year:
+                continue
+            cand.append(d)
+        # 원본 우선, 접수일 최신
+        def _rank(d):
+            is_amend = bool(_re.match(
+                r"^\s*\[(?:첨부정정|기재정정|정정|첨부추가|변경등록)\]", d.report_nm or ""
+            ))
+            return (1 if is_amend else 0,
+                    -int(str(d.rcept_dt or "0").replace("-", "") or "0"))
+        cand.sort(key=_rank)
+        return cand[0] if cand else None
+
+    filled = 0
+    for yf in missing:
+        src = _find_report_for_year(yf.year)
+        if src is None:
+            log(f"    [{yf.year}] 해당 연도 사업보고서 없음")
+            continue
+        log(f"    [{yf.year}] {src.report_nm} ({src.rcept_no})")
+        body_full = _d.fetch_body(src.rcept_no, cap=600000)
+        if not body_full or len(body_full) < 1000:
+            log(f"      본문 부족 → skip")
+            continue
+        body = biz_mod.slice_da_relevant(body_full, cap=50000)
+        log(f"      본문 {len(body_full):,}자 → D&A 관련 {len(body):,}자")
+        try:
+            parsed = llm_mod.extract_da_from_body(
+                body, client=client, **({"model": model} if model else {}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"      LLM 오류: {exc}")
+            continue
+        # year 이 정확히 일치하는 항목만 사용
+        for d in parsed or []:
+            try:
+                y_val = int(d.get("year"))
+            except (TypeError, ValueError):
+                continue
+            if y_val != yf.year:
+                continue
+            dep = d.get("dep") if isinstance(d.get("dep"), (int, float)) else None
+            amort = d.get("amort") if isinstance(d.get("amort"), (int, float)) else None
+            if dep is None and amort is None:
+                continue
+            yf.values["dep"] = dep
+            yf.values["amort"] = amort
+            yf.values["da"] = (dep or 0.0) + (amort or 0.0)
+            op = yf.values.get("op_income")
+            rev = yf.values.get("revenue")
+            if op is not None:
+                yf.values["ebitda"] = op + yf.values["da"]
+                if rev:
+                    yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+            filled += 1
+            log(f"      ✓ {yf.year} dep={dep} amort={amort} da={yf.values['da']}")
+            break
+    if filled:
+        log(f"  → 연도별 재시도로 {filled}개년 추가 보강")
+    return filled
 
 
 def _fill_da_from_body(
@@ -144,6 +282,54 @@ def _fill_da_from_body(
 
 
 def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
+    # ─── 0. 상세 로그 파일 자동 생성 (troubleshoot 용) ──────────────
+    os.makedirs(cfg.output_dir, exist_ok=True)
+    _stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _safe_company = "".join(ch for ch in (cfg.company or "session")
+                            if ch not in '/\\:*?"<>|').strip()
+    _log_path = os.path.join(cfg.output_dir, f"_log_{_safe_company}_{_stamp}.txt")
+    try:
+        _log_fh = open(_log_path, "w", encoding="utf-8")
+    except Exception:
+        _log_fh = None
+
+    def _tee_log(msg: str) -> None:
+        try:
+            log(msg)
+        except Exception:
+            pass
+        if _log_fh:
+            try:
+                _log_fh.write(msg + "\n")
+                _log_fh.flush()
+            except Exception:
+                pass
+
+    _orig_log = log
+    log = _tee_log   # 이후 본문에서 log(...) 호출은 tee 로 동작
+
+    if _log_fh:
+        log(f"[로그파일] {_log_path}")
+        log(f"[환경] Python {sys.version.split()[0]} · {platform.platform()}")
+        log(f"[설정] company={cfg.company} period={cfg.period_value}{cfg.period_unit} "
+            f"years_back={cfg.years_back} analyze_bodies={cfg.analyze_bodies} "
+            f"body_limit={cfg.body_limit} model={cfg.anthropic_model or 'default'}")
+
+    try:
+        return _run_quickreport_impl(cfg, log)
+    except Exception as exc:
+        log(f"\n[치명적 오류] {exc}")
+        log(traceback.format_exc())
+        raise
+    finally:
+        if _log_fh:
+            try:
+                _log_fh.close()
+            except Exception:
+                pass
+
+
+def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
     # 1) 회사 식별
     log(f"[1/7] 회사 조회: {cfg.company}")
     c = corp_mod.search_corp(cfg.company, log=log)
@@ -295,6 +481,21 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
             fin=fin, discs=discs, corp_code=c.corp_code,
             is_listed=is_listed, client=llm_client, model=model_name, log=log,
         )
+
+    # 6.8) 중간 검수(validation) — 누락 D&A 가 여전히 있으면 연도별 재시도
+    log(f"\n[검수] 재무 데이터 품질 점검")
+    _validate_financials(fin, log)
+    if cfg.analyze_bodies and llm_client is not None and fin.annual:
+        still_missing = [y for y in fin.annual if y.values.get("da") is None]
+        if still_missing:
+            log(f"  D&A 여전히 {len(still_missing)}개년 누락 → 연도별 직접 추출 시작")
+            _fill_da_per_year(
+                fin=fin, discs=discs, corp_code=c.corp_code,
+                is_listed=is_listed, client=llm_client, model=model_name, log=log,
+            )
+            # 최종 검수
+            log(f"\n[검수] 재무 최종 점검")
+            _validate_financials(fin, log)
 
     # 7) 파일 저장
     log(f"[8/8] 리포트 저장")

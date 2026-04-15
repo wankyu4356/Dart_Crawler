@@ -23,17 +23,85 @@ from .profile import Profile
 from .shareholders import ShareholderBundle, top_holder_summary
 
 
-# ── IB 리포트 스타일 ────────────────────────────────────────────────
+# ── 업종별 테마 팔레트 (headerprimary 만 달라짐; 나머지 UI 는 뉴트럴) ──
+# 가시성 우선 — 접근성 고려한 어두운 톤만 사용 (텍스트 #FFF 대비 ≥ 7:1)
+INDUSTRY_THEMES = {
+    "bank":    "0A3D62",  # 은행 — 딥 네이비 (신뢰)
+    "tech":    "1565C0",  # IT/SW — 블루
+    "pharma":  "1B5E20",  # 제약/바이오 — 포레스트 그린
+    "chem":    "4A148C",  # 화학/소재 — 퍼플
+    "auto":    "263238",  # 자동차/운송 — 차콜
+    "retail":  "BF360C",  # 소매/유통 — 버미리언
+    "energy":  "3E2723",  # 에너지/광업 — 브라운
+    "con":     "1A237E",  # 건설 — 인디고
+    "media":   "AD1457",  # 미디어/엔터 — 딥 핑크
+    "default": "1F3864",  # 기본 — 딥 블루
+}
+
+
+def pick_theme(profile: Profile) -> str:
+    """업종 코드·회사명 키워드로 가장 적절한 헤더 테마 컬러 선택."""
+    code = (profile.induty_code or "").strip()
+    nm = (profile.corp_name or "") + " " + (profile.corp_name_eng or "")
+    nm_l = nm.lower()
+    # 한국 표준산업분류(KSIC) 앞자리 기준 대분류
+    # 64=금융, 65=보험, 66=금융관련 / 21=의약 / 20=화학 / 30=자동차 / 46~47=도소매 /
+    # 58~63=출판/방송/IT / 05~09=광업 / 41~42=건설
+    prefix2 = code[:2] if len(code) >= 2 else ""
+    if prefix2 in ("64", "65", "66") or "은행" in nm or "뱅크" in nm or \
+       "bank" in nm_l or "증권" in nm or "securities" in nm_l or \
+       "생명" in nm or "화재" in nm or "해상" in nm or "보험" in nm or \
+       "카드" in nm or "캐피탈" in nm or \
+       "금융" in nm or "finance" in nm_l or "financial" in nm_l:
+        return INDUSTRY_THEMES["bank"]
+    if prefix2 == "21" or "제약" in nm or "바이오" in nm or "pharma" in nm_l or "bio" in nm_l:
+        return INDUSTRY_THEMES["pharma"]
+    if prefix2 == "20" or "화학" in nm or "소재" in nm or "chemical" in nm_l:
+        return INDUSTRY_THEMES["chem"]
+    if prefix2 == "30" or "자동차" in nm or "모빌리티" in nm or "motor" in nm_l:
+        return INDUSTRY_THEMES["auto"]
+    if prefix2 in ("46", "47") or "유통" in nm or "리테일" in nm or "retail" in nm_l:
+        return INDUSTRY_THEMES["retail"]
+    if prefix2 in ("58", "59", "60", "61", "62", "63") or \
+       "카카오" in nm or "네이버" in nm or "게임" in nm or "소프트" in nm_l or \
+       "테크" in nm or "tech" in nm_l or "it" in nm_l:
+        return INDUSTRY_THEMES["tech"]
+    if prefix2 in ("05", "06", "07", "08", "09") or "에너지" in nm or "정유" in nm:
+        return INDUSTRY_THEMES["energy"]
+    if prefix2 in ("41", "42") or "건설" in nm or "e&c" in nm_l:
+        return INDUSTRY_THEMES["con"]
+    if prefix2 in ("59", "90") or "엔터" in nm or "미디어" in nm or "entertainment" in nm_l:
+        return INDUSTRY_THEMES["media"]
+    return INDUSTRY_THEMES["default"]
+
+
+# ── IB 리포트 스타일 (모듈 전역. set_theme() 로 헤더 컬러만 동적 변경) ──
+_THEME_HEX = "1F3864"  # 모듈 전역 current theme
+
 HEADER_FONT = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
-HEADER_FILL = PatternFill("solid", fgColor="1F3864")          # 딥블루
-SECTION_FILL = PatternFill("solid", fgColor="D9E1F2")         # 섹션 밴드
-SUBHEADER_FILL = PatternFill("solid", fgColor="D9E1F2")       # 호환
-RATIO_FILL = PatternFill("solid", fgColor="F3F6FB")           # 비율 행
-RATIO_FONT = Font(italic=True, color="1F3864", name="Calibri", size=11)
-SUBTOTAL_FILL = PatternFill("solid", fgColor="E7EEF7")
-SUBTOTAL_FONT = Font(bold=True, color="1F3864", name="Calibri", size=11)
-TOTAL_FILL = PatternFill("solid", fgColor="1F3864")
+HEADER_FILL = PatternFill("solid", fgColor=_THEME_HEX)        # 테마색
+SECTION_FILL = PatternFill("solid", fgColor="E8EDF5")         # 뉴트럴 섹션 밴드
+SUBHEADER_FILL = PatternFill("solid", fgColor="E8EDF5")       # 호환
+RATIO_FILL = PatternFill("solid", fgColor="F4F7FB")           # 비율 행 뉴트럴
+RATIO_FONT = Font(italic=True, color="37474F", name="Calibri", size=11)
+SUBTOTAL_FILL = PatternFill("solid", fgColor="EEF2F7")        # 부분합 뉴트럴
+SUBTOTAL_FONT = Font(bold=True, color="263238", name="Calibri", size=11)
+TOTAL_FILL = PatternFill("solid", fgColor=_THEME_HEX)
 TOTAL_FONT = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
+
+
+def _apply_theme(hex_color: str) -> None:
+    """헤더/TOTAL 색상만 테마 hex 로 갱신 (나머지 뉴트럴 유지)."""
+    global _THEME_HEX, HEADER_FILL, TOTAL_FILL, _MEDIUM_SIDE, HEADER_BORDER
+    _THEME_HEX = hex_color
+    HEADER_FILL.fgColor.rgb = hex_color
+    TOTAL_FILL.fgColor.rgb = hex_color
+    # 보더 테마색도 동기화
+    _MEDIUM_SIDE = Side(style="medium", color=hex_color)
+    HEADER_BORDER = Border(
+        left=_MEDIUM_SIDE, right=_MEDIUM_SIDE,
+        top=_MEDIUM_SIDE, bottom=_MEDIUM_SIDE,
+    )
 CHECK_OK_FILL = PatternFill("solid", fgColor="E8F5E9")
 CHECK_FAIL_FILL = PatternFill("solid", fgColor="FFEBEE")
 NOTE_FONT = Font(italic=True, color="616161", name="Calibri", size=10)
@@ -70,10 +138,12 @@ PCT_FMT = '0.0"%";[Red]\\-0.0"%";"-"'
 
 
 def _style_header(ws, row: int, ncols: int) -> None:
+    # 테마 컬러 적용 — 모듈 전역 _THEME_HEX 기반으로 셀마다 새 fill 생성
+    theme_fill = PatternFill("solid", fgColor=_THEME_HEX)
     for c in range(1, ncols + 1):
         cell = ws.cell(row=row, column=c)
         cell.font = HEADER_FONT
-        cell.fill = HEADER_FILL
+        cell.fill = theme_fill
         cell.alignment = HEADER_ALIGN
         cell.border = HEADER_BORDER
     ws.row_dimensions[row].height = 28
@@ -98,9 +168,31 @@ def _autofit(ws, max_width: int = 50) -> None:
 # ── 섹션별 writer ────────────────────────────────────────────────────────
 def _write_profile(ws, profile: Profile, period_label: str) -> None:
     ws.title = "Profile"
-    ws["A1"] = "완규의 딸깍공장 — Company Profile"
-    ws["A1"].font = Font(bold=True, size=14)
-    ws["A3"] = "조회기간"; ws["B3"] = period_label
+    ws.sheet_view.showGridLines = False
+
+    # 타이틀 배너 (테마색 적용)
+    ws["A1"] = profile.corp_name
+    ws["A1"].font = Font(bold=True, size=20, color="FFFFFF", name="Calibri")
+    ws["A1"].fill = PatternFill("solid", fgColor=_THEME_HEX)
+    ws["A1"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.merge_cells("A1:D1")
+    ws.row_dimensions[1].height = 36
+
+    # 서브 배너
+    ws["A2"] = (f"{profile.corp_cls_label}  ·  "
+                f"{profile.stock_code or profile.corp_code}  ·  "
+                f"CEO {profile.ceo_nm or '-'}")
+    ws["A2"].font = Font(italic=True, size=11, color="607D8B", name="Calibri")
+    ws["A2"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws.merge_cells("A2:D2")
+    ws.row_dimensions[2].height = 20
+
+    # 조회기간 라벨
+    ws["A3"] = "조회기간"
+    ws["A3"].font = Font(bold=True, color=_THEME_HEX, name="Calibri", size=10)
+    ws["A3"].alignment = INDENT_ALIGN
+    ws["B3"] = period_label
+    ws["B3"].font = BODY_FONT
     rows = [
         ("회사명(국문)",  profile.corp_name),
         ("회사명(영문)",  profile.corp_name_eng),
@@ -164,6 +256,9 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
 
     ws = wb.create_sheet(sheet_name)
     ws.sheet_view.showGridLines = False
+
+    # 과거 → 최신 순으로 정렬 (왼쪽부터 오래된 → 오른쪽이 최신)
+    annual_list = sorted(annual_list, key=lambda y: y.year)
 
     FS_KR = {"CFS": "연결", "OFS": "별도"}
     headers = ["계정"]
@@ -248,7 +343,7 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
             lbl_cell.alignment = INDENT_ALIGN
         elif level == "total":
             lbl_cell.font = TOTAL_FONT
-            lbl_cell.fill = TOTAL_FILL
+            lbl_cell.fill = PatternFill("solid", fgColor=_THEME_HEX)
             lbl_cell.alignment = LEFT_ALIGN
         elif level == "subtotal":
             lbl_cell.font = SUBTOTAL_FONT
@@ -303,7 +398,7 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
             # 합계 강조
             if level == "total":
                 cell.font = TOTAL_FONT
-                cell.fill = TOTAL_FILL
+                cell.fill = PatternFill("solid", fgColor=_THEME_HEX)
             elif level == "subtotal":
                 cell.font = SUBTOTAL_FONT
                 cell.fill = SUBTOTAL_FILL
@@ -333,11 +428,14 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
             lbl.alignment = INDENT_ALIGN
             if src_row is None:
                 continue
+            # 과거 → 최신 순이므로 i 열은 (i-1) 열을 전년으로 참조. i=0 은 비교 불가.
             for i in range(len(annual_list)):
+                if i == 0:
+                    cell = ws.cell(row=yoy_row_idx, column=2 + i)
+                    cell.number_format = PCT_FMT
+                    continue
                 col_curr = get_column_letter(2 + i)
-                col_prev = get_column_letter(2 + i + 1)
-                if i + 1 >= len(annual_list):
-                    break
+                col_prev = get_column_letter(2 + i - 1)
                 cell = ws.cell(row=yoy_row_idx, column=2 + i)
                 cell.value = (
                     f'=IFERROR(({col_curr}{src_row}/{col_prev}{src_row}-1)*100,"")'
@@ -345,8 +443,9 @@ def _write_financials_sheet(wb: Workbook, sheet_name: str,
                 cell.number_format = PCT_FMT
                 cell.alignment = RIGHT_ALIGN
                 cell.font = BODY_FONT
-            for c in range(2 + max(len(annual_list) - 1, 0), n_cols + 1):
-                ws.cell(row=yoy_row_idx, column=c).number_format = PCT_FMT
+            # 분기 컬럼 포맷
+            if latest_q:
+                ws.cell(row=yoy_row_idx, column=n_cols).number_format = PCT_FMT
 
     # ── 검증(Check) 행: 자산 = 부채 + 자본, 매출총이익 원본 vs 수식 일치 등
     ws.append([])
@@ -929,6 +1028,9 @@ def write_excel(
     business: Optional[dict] = None,
     footnotes: Optional[dict] = None,
 ) -> None:
+    # 업종별 테마 적용 (헤더/총계 컬러만 동적)
+    _apply_theme(pick_theme(profile))
+
     wb = Workbook()
     _write_profile(wb.active, profile, period_label)
 

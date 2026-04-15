@@ -799,7 +799,9 @@ def _exec_section(cnt: SectionCounter, exec_summary: Optional[str]) -> str:
 
 
 def _fin_table_for(annual: List, latest_q) -> str:
-    """확장 KPI 표 (Performance + BS + YoY) — 임의의 annual/latest_q 리스트로 렌더."""
+    """확장 KPI 표 (Performance + BS + YoY) — 왼쪽(과거) → 오른쪽(최신) 순."""
+    # 과거 → 최신 순으로 정렬 (사용자 요청)
+    annual = sorted(annual, key=lambda y: y.year)
     cols = [f"{y.year} ({y.reprt_label})" for y in annual]
     if latest_q:
         cols.append(f"{latest_q.year} {latest_q.reprt_label}")
@@ -828,12 +830,13 @@ def _fin_table_for(annual: List, latest_q) -> str:
     yoy_html = ""
     if len(annual) >= 2:
         def _yoy_row(key: str, label: str) -> str:
+            # annual 은 과거→최신 순. 첫 열은 비교 불가, 이후 열은 직전 연도 대비.
             cells = []
             for i, y in enumerate(annual):
-                if i + 1 >= len(annual):
+                if i == 0:
                     cells.append("<td>-</td>")
                     continue
-                v = yoy(y.values.get(key), annual[i + 1].values.get(key))
+                v = yoy(y.values.get(key), annual[i - 1].values.get(key))
                 if v is None:
                     cells.append("<td>-</td>")
                 else:
@@ -1168,18 +1171,25 @@ CHART_INIT_JS = r"""
     var payload = CD[fs];
     if (!payload) return;
 
-    // 1) 손익 bar
+    // 1) 손익 bar — 조원이면 소수점 2자리, 억원은 콤마
     var p = payload.performance;
     var elP = document.getElementById('chart-perf-' + fs);
     if (p && elP) {
       var pUnit = p.unit || '억원';
+      var pFrac = (pUnit === '조원') ? 2 : 0;
       new Chart(elP, {
         type: 'bar',
         data: { labels: p.labels, datasets: p.datasets },
         options: Object.assign({}, COMMON, {
           scales: {
             y: {
-              ticks: { callback: function(v){ return v.toLocaleString('ko-KR') + pUnit; }, font:{size:11} },
+              ticks: {
+                callback: function(v){
+                  return v.toLocaleString('ko-KR',
+                    {minimumFractionDigits: pFrac, maximumFractionDigits: pFrac}) + pUnit;
+                },
+                font:{size:11}
+              },
               grid: { color: '#eceff4' }
             },
             x: { grid: { display: false }, ticks: {font:{size:11}} }
@@ -1190,7 +1200,8 @@ CHART_INIT_JS = r"""
                 label: function(ctx){
                   var v = ctx.parsed.y;
                   return ctx.dataset.label + ': ' + (v == null ? '-'
-                    : v.toLocaleString('ko-KR', {maximumFractionDigits:2}) + pUnit);
+                    : v.toLocaleString('ko-KR',
+                        {minimumFractionDigits: pFrac, maximumFractionDigits: 2}) + pUnit);
                 }
               }
             })
@@ -1225,26 +1236,41 @@ CHART_INIT_JS = r"""
       });
     }
 
-    // 3) BS stacked
+    // 3) BS stacked — 조원 단위는 소수점 2자리, 억원 단위는 콤마
     var b = payload.bs;
     var elB = document.getElementById('chart-bs-' + fs);
     if (b && elB) {
       var bUnit = b.unit || '조원';
+      var bFrac = (bUnit === '조원') ? 2 : 0;   // 조원이면 소수점 2자리
       new Chart(elB, {
         type: 'bar',
         data: { labels: b.labels, datasets: b.datasets },
         options: Object.assign({}, COMMON, {
           scales: {
-            y: { stacked: true, ticks: { callback: function(v){ return v.toLocaleString('ko-KR') + bUnit; }, font:{size:11} }, grid: { color: '#eceff4' } },
+            y: {
+              stacked: true,
+              ticks: {
+                callback: function(v){
+                  return v.toLocaleString('ko-KR',
+                    {minimumFractionDigits: bFrac, maximumFractionDigits: bFrac}) + bUnit;
+                },
+                font:{size:11}
+              },
+              grid: { color: '#eceff4' }
+            },
             x: { stacked: true, grid: { display: false }, ticks: {font:{size:11}} }
           },
           plugins: Object.assign({}, COMMON.plugins, {
             tooltip: Object.assign({}, COMMON.plugins.tooltip, {
               callbacks: {
-                label: function(ctx){ return ctx.dataset.label + ': ' + ctx.parsed.y.toFixed(2) + bUnit; },
+                label: function(ctx){
+                  return ctx.dataset.label + ': ' + ctx.parsed.y.toLocaleString('ko-KR',
+                    {minimumFractionDigits: bFrac, maximumFractionDigits: bFrac}) + bUnit;
+                },
                 footer: function(items){
                   var sum = items.reduce(function(s, i){ return s + i.parsed.y; }, 0);
-                  return '자산총계 ≈ ' + sum.toFixed(2) + bUnit;
+                  return '자산총계 ≈ ' + sum.toLocaleString('ko-KR',
+                    {minimumFractionDigits: bFrac, maximumFractionDigits: bFrac}) + bUnit;
                 }
               }
             })

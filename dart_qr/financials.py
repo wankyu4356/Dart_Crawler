@@ -24,11 +24,18 @@ from . import dart_api as api
 # ── 계정명 정규화 → key ─────────────────────────────────────────────────
 # 공백 제거 후 비교 (DART 응답에 공백/괄호 표기가 다양함)
 IS_ACCOUNT_MAP: Dict[str, str] = {
+    # 일반 기업
     "매출액":           "revenue",
     "수익(매출액)":      "revenue",
     "매출":             "revenue",
     "영업수익":          "revenue",
     "매출액(영업수익)":   "revenue",
+    "영업수익등":        "revenue",
+    "영업총수익":        "revenue",
+    "총영업수익":        "revenue",
+    "순영업수익":        "revenue",    # 은행 (순이자이익+순수수료이익)
+    "영업총이익":        "revenue",    # 증권사
+    "용역수익":          "revenue",
 
     "매출원가":          "cost_of_sales",
     "용역원가":          "cost_of_sales",
@@ -55,6 +62,15 @@ IS_ACCOUNT_MAP: Dict[str, str] = {
     "연결당기순이익":      "net_income",
     "연결당기순손익":      "net_income",
 }
+
+# 금융사(은행/증권/보험) revenue 합산 후보 — 합계 라인이 없는 경우 개별 라인 합산
+FINANCIAL_REV_COMPONENTS = [
+    "이자수익", "이자및유사수익",
+    "수수료수익", "수수료및유사수익",
+    "보험료수익", "보험영업수익",
+    "배당금수익", "배당수익",
+    "기타영업수익",
+]
 
 BS_ACCOUNT_MAP: Dict[str, str] = {
     "자산총계":          "total_assets",
@@ -342,6 +358,33 @@ def _extract_year_values(
 
         if out["dep"] is not None or out["amort"] is not None:
             out["da"] = (out["dep"] or 0.0) + (out["amort"] or 0.0)
+
+    # 금융사 revenue fallback — 합계 라인이 없을 때 개별 항목 합산
+    if out["revenue"] is None:
+        component_sum = 0.0
+        found = 0
+        field_main = {
+            "thstrm":    ["thstrm_amount", "thstrm_add_amount"],
+            "frmtrm":    ["frmtrm_amount", "frmtrm_add_amount"],
+            "bfefrmtrm": ["bfefrmtrm_amount"],
+        }[period]
+        for row in rows:
+            sj = (row.get("sj_div") or "").upper()
+            if sj not in ("IS", "CIS"):
+                continue
+            nm = (row.get("account_nm") or "").replace(" ", "").replace("\u3000", "")
+            if nm not in FINANCIAL_REV_COMPONENTS:
+                continue
+            v: Optional[float] = None
+            for f in field_main:
+                v = _to_num(row.get(f))
+                if v is not None:
+                    break
+            if v is not None:
+                component_sum += v
+                found += 1
+        if found >= 1 and component_sum > 0:
+            out["revenue"] = component_sum
 
     # 파생: gross_profit
     if out["gross_profit"] is None and out["revenue"] is not None and out["cost_of_sales"] is not None:
