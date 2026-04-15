@@ -917,11 +917,11 @@ def _financials_section(
     view_cfs = _render_view("cfs", fin.annual_cfs, fin.latest_quarter_cfs,
                             cp.get("cfs") or {}) if has_cfs else (
         '<div class="fs-view" data-fs="cfs" style="display:none">'
-        '<p class="muted">연결재무제표 데이터 없음</p></div>')
+        '<p class="muted">Consolidated 재무제표 데이터 없음</p></div>')
     view_ofs = _render_view("ofs", fin.annual_ofs, fin.latest_quarter_ofs,
                             cp.get("ofs") or {}) if has_ofs else (
         '<div class="fs-view" data-fs="ofs" style="display:none">'
-        '<p class="muted">별도재무제표 데이터 없음</p></div>')
+        '<p class="muted">Standalone 재무제표 데이터 없음</p></div>')
 
     # 토글 버튼 (기본 CFS 활성)
     default_fs = "cfs" if has_cfs else "ofs"
@@ -937,9 +937,9 @@ def _financials_section(
     toggle_html = (
         f'<div class="fs-toggle" role="tablist">'
         f'<button class="{tab_cfs_cls}" data-fs="cfs" '
-        f'{"" if has_cfs else "disabled"}>연결 (CFS) <span class="muted small">{cfs_suffix}</span></button>'
+        f'{"" if has_cfs else "disabled"}>Consolidated <span class="muted small">{cfs_suffix}</span></button>'
         f'<button class="{tab_ofs_cls}" data-fs="ofs" '
-        f'{"" if has_ofs else "disabled"}>별도 (OFS) <span class="muted small">{ofs_suffix}</span></button>'
+        f'{"" if has_ofs else "disabled"}>Standalone <span class="muted small">{ofs_suffix}</span></button>'
         f'</div>'
     )
 
@@ -952,11 +952,11 @@ def _financials_section(
     cfs_cnt = len(fin.annual_cfs)
     ofs_cnt = len(fin.annual_ofs)
     if cfs_cnt and ofs_cnt:
-        hint = f'<span class="hint">연결 {cfs_cnt}개년 · 별도 {ofs_cnt}개년 수집</span>'
+        hint = f'<span class="hint">Consolidated {cfs_cnt}개년 · Standalone {ofs_cnt}개년 수집</span>'
     elif cfs_cnt:
-        hint = f'<span class="hint">연결재무제표 기준 {cfs_cnt}개년</span>'
+        hint = f'<span class="hint">Consolidated 기준 {cfs_cnt}개년</span>'
     elif ofs_cnt:
-        hint = f'<span class="hint">별도재무제표 기준 {ofs_cnt}개년</span>'
+        hint = f'<span class="hint">Standalone 기준 {ofs_cnt}개년</span>'
 
     return f"""
 <section class="card fin-card">
