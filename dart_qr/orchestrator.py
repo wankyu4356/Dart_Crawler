@@ -121,6 +121,34 @@ def _validate_financials(fin, log: LogFn) -> Dict[str, Any]:
     return {"report": report, "missing_by_key": missing_by_key}
 
 
+def _propagate_da_to_fs_lists(fin, year: int, dep, amort) -> None:
+    """fin.annual 의 특정 year 에 D&A 를 주입한 직후, 같은 year 의
+    annual_cfs / annual_ofs YearFin 에도 동일한 값을 복사.
+
+    fs_div 별 pivot 을 안 쓰고 LLM 으로 뽑힌 D&A 라도 Standalone 탭이
+    비지 않도록 하는 장치. 이미 값이 있으면 덮어쓰지 않음.
+    """
+    da_sum = (dep or 0.0) + (amort or 0.0)
+    if dep is None and amort is None:
+        return
+    for attr in ("annual_cfs", "annual_ofs"):
+        seq = getattr(fin, attr, None) or []
+        for yf in seq:
+            if yf.year != year:
+                continue
+            if yf.values.get("da") is not None:
+                continue
+            yf.values["dep"] = dep
+            yf.values["amort"] = amort
+            yf.values["da"] = da_sum
+            op = yf.values.get("op_income")
+            rev = yf.values.get("revenue")
+            if op is not None:
+                yf.values["ebitda"] = op + da_sum
+                if rev:
+                    yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+
+
 def _fill_da_per_year(
     fin, discs, corp_code: str, is_listed: bool,
     client, model: Optional[str], log: LogFn,
@@ -215,6 +243,8 @@ def _fill_da_per_year(
                 yf.values["ebitda"] = op + yf.values["da"]
                 if rev:
                     yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+            # Standalone / Consolidated 리스트에도 같은 값 전파
+            _propagate_da_to_fs_lists(fin, yf.year, dep, amort)
             filled += 1
             src_label = d.get("source", "?")
             log(f"      ✓ {yf.year} dep={dep} amort={amort} "
@@ -239,12 +269,9 @@ def _fill_da_from_body(
 
     감사보고서/사업보고서 1건의 본문을 Claude 에 던져 [{year, dep, amort}]
     배열로 추출. 해당 연도의 YearFin.values 에 주입 + EBITDA 파생 재계산.
-    """
-    # 1) raw_rows 피벗 (무비용)
-    raw_filled = fin_mod.fill_da_from_raw(fin)
-    if raw_filled:
-        log(f"  D&A raw 피벗: {raw_filled}개 항목 보강 (API raw 재활용, 무비용)")
 
+    ※ raw_rows 피벗은 fetch_all 직후 unconditional 로 이미 수행됨 (여기선 스킵).
+    """
     missing_years = [
         y.year for y in fin.annual
         if y.values.get("da") is None
@@ -327,6 +354,8 @@ def _fill_da_from_body(
             rev = yf.values.get("revenue")
             if rev:
                 yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+        # Standalone / Consolidated 리스트에도 같은 값 전파
+        _propagate_da_to_fs_lists(fin, yf.year, dep, amort)
         filled += 1
     log(f"    → D&A {filled}개년 보강 완료")
 
@@ -432,6 +461,12 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
             client=llm_client, log=log, disclosures=discs,
         )
     log(f"  → 연간 {len(fin.annual)}건, 분기 {'있음' if fin.latest_quarter else '없음'}")
+
+    # 5.5) D&A raw 피벗 — LLM 무관 무비용 작업. Consolidated/Standalone
+    #      둘 다 누락 연도 보강 (CFS 전용·OFS 전용·통합 pivot 세 벌로 fs_div 인지).
+    raw_filled = fin_mod.fill_da_from_raw(fin)
+    if raw_filled:
+        log(f"  D&A raw 피벗 (무비용): {raw_filled}개 항목 보강")
 
     # 6) 주주/지배구조
     if is_listed:

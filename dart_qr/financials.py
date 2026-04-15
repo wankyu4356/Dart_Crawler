@@ -471,12 +471,18 @@ def fill_da_from_raw(fin: "FinancialsBundle") -> int:
     3년치 CF 라인이 함께 돌아오므로, 단일 보고서 파싱 시점엔 놓친 과거 연도를
     raw_rows 전수 피벗으로 **무비용** 복구한다.
 
-    같은 (year, kind) 에 대해 여러 후보값이 나오면 최대 절댓값 채택.
-    annual / annual_cfs / annual_ofs 세 리스트 모두에 적용.
+    **fs_div 인지 피벗**: CFS 전용·OFS 전용·양측 통합 세 벌을 각각 만들어
+    annual_cfs 는 CFS pivot 에서 우선 찾고 실패 시 공통 pivot fallback,
+    annual_ofs 도 마찬가지. 이렇게 하면 연결에만 CF 라인이 있는 회사에서도
+    Standalone 탭에 동일 D&A 를 투영할 수 있다.
 
-    반환: 새로 채워진 (YearFin, fs_set) 카운트.
+    같은 (year, kind) 에 대해 여러 후보값이 나오면 최대 절댓값 채택.
+
+    반환: 새로 채워진 (YearFin) 카운트.
     """
-    pivot: Dict[int, Dict[str, float]] = {}
+    pivot_cfs: Dict[int, Dict[str, float]] = {}
+    pivot_ofs: Dict[int, Dict[str, float]] = {}
+    pivot_any: Dict[int, Dict[str, float]] = {}
     for r in fin.raw_rows:
         sj = (r.get("sj_div") or "").upper()
         if sj not in ("CF", "IS", "CIS"):
@@ -490,48 +496,60 @@ def fill_da_from_raw(fin: "FinancialsBundle") -> int:
         call_year = r.get("_call_year")
         if not isinstance(call_year, int):
             continue
+        fs_div = (r.get("_fs_div") or "").upper()
         for period, yoff in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
             amt = _to_num(r.get(f"{period}_amount"))
             if amt is None:
                 continue
             year = call_year - yoff
-            slot = pivot.setdefault(year, {})
             av = abs(amt)
-            if av > slot.get(kind, 0):
-                slot[kind] = av
+            for pv in ((pivot_cfs,) if fs_div == "CFS" else
+                       (pivot_ofs,) if fs_div == "OFS" else ()):
+                slot = pv.setdefault(year, {})
+                if av > slot.get(kind, 0):
+                    slot[kind] = av
+            # 통합 pivot 에도 항상 추가
+            slot_any = pivot_any.setdefault(year, {})
+            if av > slot_any.get(kind, 0):
+                slot_any[kind] = av
+
+    def _apply(yf: "YearFin", p: Dict[str, float]) -> bool:
+        if yf.values.get("da") is not None:
+            return False
+        if not p:
+            return False
+        if p.get("da_total"):
+            yf.values["da"] = p["da_total"]
+        else:
+            dep = p.get("dep")
+            amort = p.get("amort")
+            if dep is None and amort is None:
+                return False
+            yf.values["dep"] = dep
+            yf.values["amort"] = amort
+            yf.values["da"] = (dep or 0.0) + (amort or 0.0)
+        op = yf.values.get("op_income")
+        rev = yf.values.get("revenue")
+        if op is not None:
+            yf.values["ebitda"] = op + yf.values["da"]
+            if rev:
+                yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+        return True
 
     filled = 0
-    targets: List[List["YearFin"]] = [fin.annual]
-    # annual_cfs / annual_ofs 가 있으면 각각도 적용
-    for attr in ("annual_cfs", "annual_ofs"):
-        seq = getattr(fin, attr, None)
-        if seq:
-            targets.append(seq)
-
-    for seq in targets:
-        for yf in seq:
-            if yf.values.get("da") is not None:
-                continue
-            p = pivot.get(yf.year)
-            if not p:
-                continue
-            if p.get("da_total"):
-                yf.values["da"] = p["da_total"]
-                # dep/amort 개별값은 덮어쓰지 않음
-            else:
-                dep = p.get("dep")
-                amort = p.get("amort")
-                if dep is None and amort is None:
-                    continue
-                yf.values["dep"] = dep
-                yf.values["amort"] = amort
-                yf.values["da"] = (dep or 0.0) + (amort or 0.0)
-            op = yf.values.get("op_income")
-            rev = yf.values.get("revenue")
-            if op is not None:
-                yf.values["ebitda"] = op + yf.values["da"]
-                if rev:
-                    yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
+    # hybrid annual: 통합 pivot 사용
+    for yf in fin.annual:
+        if _apply(yf, pivot_any.get(yf.year, {})):
+            filled += 1
+    # CFS: CFS pivot 우선, 실패 시 통합 pivot
+    for yf in getattr(fin, "annual_cfs", None) or []:
+        p = pivot_cfs.get(yf.year) or pivot_any.get(yf.year, {})
+        if _apply(yf, p):
+            filled += 1
+    # OFS: OFS pivot 우선, 실패 시 통합 pivot (연결만 D&A 있는 회사 대응)
+    for yf in getattr(fin, "annual_ofs", None) or []:
+        p = pivot_ofs.get(yf.year) or pivot_any.get(yf.year, {})
+        if _apply(yf, p):
             filled += 1
     return filled
 
