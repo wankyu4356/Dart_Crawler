@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 import json
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
@@ -450,8 +451,57 @@ def _clean_utf8(s: str) -> str:
         return s
 
 
+class _FakeResponseContent:
+    """Anthropic SDK 응답과 유사한 최소 인터페이스 (raw HTTP fallback 용)."""
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _FakeResponse:
+    def __init__(self, text: str):
+        self.content = [_FakeResponseContent(text)]
+
+
+def _raw_http_call(kwargs: Dict[str, Any], api_key: str):
+    """Anthropic SDK 우회 — requests 로 직접 REST API 호출.
+
+    SDK 의 httpx 내부에서 발생하는 UnicodeEncodeError 를 bypass 한다.
+    """
+    import requests
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json; charset=utf-8",
+    }
+    payload = {
+        "model": kwargs["model"],
+        "max_tokens": kwargs["max_tokens"],
+    }
+    sys_blk = kwargs.get("system")
+    if sys_blk:
+        payload["system"] = sys_blk
+    msgs = kwargs.get("messages") or []
+    payload["messages"] = msgs
+
+    resp = requests.post(
+        "https://api.anthropic.com/v1/messages",
+        headers=headers,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        timeout=120,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    blocks = data.get("content") or []
+    text = "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict))
+    return _FakeResponse(text)
+
+
 def _safe_create(client, **kwargs):
-    """client.messages.create() 호출 전 모든 문자열 인자를 UTF-8 clean."""
+    """client.messages.create() 호출 전 모든 문자열 인자를 UTF-8 clean.
+
+    SDK 호출 실패 시 (UnicodeEncodeError 등 인코딩 크래시) 자동으로
+    raw HTTP fallback 으로 재시도.
+    """
     sys_blk = kwargs.get("system")
     if isinstance(sys_blk, list):
         for b in sys_blk:
@@ -469,7 +519,14 @@ def _safe_create(client, **kwargs):
                 for blk in c:
                     if isinstance(blk, dict) and isinstance(blk.get("text"), str):
                         blk["text"] = _clean_utf8(blk["text"])
-    return client.messages.create(**kwargs)
+    try:
+        return client.messages.create(**kwargs)
+    except UnicodeEncodeError:
+        # SDK 내부 ASCII 인코딩 크래시 → raw HTTP 로 재시도
+        key = ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
+        if not key:
+            raise
+        return _raw_http_call(kwargs, key)
 
 
 def extract_da_from_body(

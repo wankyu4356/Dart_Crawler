@@ -710,14 +710,10 @@ _BS_CANONICAL = [
     ("자본총계", 130),
 ]
 
-_CF_CANONICAL = [
-    ("영업활동", 10),
-    ("투자활동", 20),
-    ("재무활동", 30),
-    ("현금및현금성자산의증가", 40), ("현금의증가", 40), ("현금의감소", 41),
-    ("기초현금", 50),
-    ("기말현금", 60),
-]
+# CF 는 DART API ord 가 subtotal-detail 계층을 올바르게 반영하므로
+# canonical 강제 정렬 대신 API ord 를 그대로 따름.
+# (강제 정렬 시 영업활동/투자활동 subtotals 가 detail items 위로 뭉치는 부작용)
+_CF_CANONICAL = []
 
 
 # 서브토탈 ↔ 구성요소 규칙. 구성요소는 `_paren_norm()` 기준 키.
@@ -970,6 +966,9 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         ws.row_dimensions[r].height = 22
         r += 1
 
+        # 이 sj 섹션의 (key, row_idx, is_subtotal) 기록 — 자동 SUM 범위 검증용
+        section_ordered: List[tuple] = []
+
         for key in sj_keys:
             m = meta.get(key, {})
             display_nm = m.get("display_nm", key[1])
@@ -1019,11 +1018,13 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
 
             # row 추적 (체커용)
             row_of[(sj, _paren_norm(display_nm))] = r
+            section_ordered.append((key, r, is_sub))
             r += 1
 
-        # 섹션 끝 — 이 섹션의 서브토탈 검증 행 삽입
+        # 섹션 끝 — 이 섹션의 서브토탈 검증 행 삽입 (규칙 + 자동 감지)
         added = _insert_subtotal_checkers(
             ws, sj, row_of, r, years, C, hdr_labels,
+            ordered_rows=section_ordered,
         )
         r += added
         r += 1  # 섹션 간 빈 행
@@ -1052,32 +1053,43 @@ def _resolve_alt(row_of: Dict[tuple, int], sj: str, comp: str
     return None
 
 
+# 자동 서브토탈 감지용 — 이 계정명들은 **이전 detail 행들의 합** 으로 검증.
+# 즉 `유동자산 = SUM(현금 + 매출채권 + 재고자산 + ...)` 형태의 검증.
+AUTO_SUM_SUBTOTALS = {
+    # BS mid-level subtotals
+    "유동자산", "비유동자산",
+    "유동부채", "비유동부채",
+    # CF section subtotals (간접법 영업활동 하위 조정 항목들)
+    "영업활동현금흐름", "영업활동으로인한현금흐름",
+    "투자활동현금흐름", "투자활동으로인한현금흐름",
+    "재무활동현금흐름", "재무활동으로인한현금흐름",
+}
+
+
 def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
                               start_row: int, years: List[int], C: int,
-                              hdr_labels: List[str]) -> int:
-    """해당 sj (BS/IS/CIS/CF) 의 서브토탈 규칙 검증 행을 삽입.
+                              hdr_labels: List[str],
+                              ordered_rows: List[tuple] = None) -> int:
+    """해당 sj 의 모든 서브토탈 검증 행을 삽입.
 
-    한 sub_key 에 여러 규칙이 등록돼 있으면 **모든 구성요소가 존재하는 첫 번째**
-    규칙만 적용 (중복 검증 행 방지).
+    2단계 검증:
+    (1) SUBTOTAL_RULES 기반 — 매출총이익=매출-원가 같은 산식
+    (2) AUTO_SUM_SUBTOTALS 기반 — 유동자산 = 이전 detail 합
 
-    반환: 삽입한 행 수.
+    ordered_rows: 이 sj 에 속한 (key, row_idx, is_subtotal) 튜플 리스트
+                  (자동 감지용).
     """
-    rules = SUBTOTAL_RULES.get(sj, [])
-    if not rules:
-        return 0
     n_added = 0
-    check_fill_ok = PatternFill("solid", fgColor="E8F5E9")  # 연녹색
+    check_fill_ok = PatternFill("solid", fgColor="E8F5E9")
     check_font = Font(italic=True, color="37474F", name="Calibri", size=10)
-
-    # 이미 체커 붙인 (sub_key, comp_signature) 중복 제거용
     applied_subs: set = set()
 
-    for sub_key, comps, tol_pct in rules:
+    # ─── (1) 규칙 기반 검증 ─────────────────────────────────────────
+    for sub_key, comps, tol_pct in SUBTOTAL_RULES.get(sj, []):
         sub_row = row_of.get((sj, sub_key))
         if sub_row is None:
             continue
-        # 각 component 를 resolve (alt 우선순위 적용)
-        resolved: List[tuple] = []  # [(sign, row, label), ...]
+        resolved: List[tuple] = []
         all_present = True
         for c in comps:
             rv = _resolve_alt(row_of, sj, c)
@@ -1087,14 +1099,12 @@ def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
             resolved.append(rv)
         if not all_present:
             continue
-
         sig = (sub_key, tuple((s, rw) for s, rw, _ in resolved))
         if sig in applied_subs:
             continue
         applied_subs.add(sig)
 
         r = start_row + n_added
-        # 설명 셀 — 실제 매치된 라벨 사용
         first_sign, _, first_label = resolved[0]
         desc = f"  └ 검증: {'-' if first_sign < 0 else ''}{first_label}"
         for sign, _, label in resolved[1:]:
@@ -1105,20 +1115,19 @@ def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
             horizontal="left", vertical="center", indent=2,
         )
 
-        # 연도별 수식
         for yi in range(len(years)):
             col = C + 1 + yi
             sub_ref = ws.cell(row=sub_row, column=col).coordinate
-            # 구성요소 합산 수식
             parts = []
             for sign, rw, _ in resolved:
                 ref = ws.cell(row=rw, column=col).coordinate
                 parts.append(f"{'-' if sign < 0 else '+'}{ref}")
-            expr_sum = "".join(parts).lstrip("+")   # 첫 +만 제거
-            tol = max(1_000_000, int(abs(tol_pct) * 1e12))  # display fallback
+            expr_sum = "".join(parts).lstrip("+")
+            count_refs = ",".join(
+                ws.cell(row=rw, column=col).coordinate for _, rw, _ in resolved
+            )
             formula = (
-                f'=IF(AND(ISNUMBER({sub_ref}),'
-                f'COUNT({",".join(ws.cell(row=rw, column=col).coordinate for _, rw, _ in resolved)})={len(resolved)}),'
+                f'=IF(AND(ISNUMBER({sub_ref}),COUNT({count_refs})={len(resolved)}),'
                 f'IF(ABS({sub_ref}-({expr_sum}))<=MAX(ABS({sub_ref})*{tol_pct},1000000),'
                 f'"✓",'
                 f'"⚠ diff="&TEXT({sub_ref}-({expr_sum}),"#,##0")),'
@@ -1128,10 +1137,71 @@ def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
             cell.font = check_font
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.fill = check_fill_ok
-
         for ci in range(len(hdr_labels)):
             ws.cell(row=r, column=C + ci).border = THIN_BORDER
         n_added += 1
+
+    # ─── (2) 자동 감지 검증: 서브토탈 = 그 이후 detail 합 (subtotal-first 레이아웃) ─
+    # DART 는 subtotal 을 상단에 먼저 두고 detail 을 아래 indent 로 표시 →
+    # `유동자산 = SUM(유동자산 이후 ~ 다음 subtotal 이전)` 로 검증.
+    if ordered_rows:
+        # 경계 row = `_is_subtotal()` True 거나 AUTO_SUM_SUBTOTALS 키
+        # (유동자산·비유동자산 같은 mid-subtotal 은 `총계` 로 안 끝나므로
+        #  _is_subtotal=False 지만 boundary 로 취급해야 next range 가 정확)
+        def _is_boundary(key, is_s):
+            return is_s or (key[1] in AUTO_SUM_SUBTOTALS)
+        boundary_rows = [
+            rw for k, rw, is_s in ordered_rows if _is_boundary(k, is_s)
+        ]
+        for idx, (key, row_idx, is_sub) in enumerate(ordered_rows):
+            display = key[1]
+            if display not in AUTO_SUM_SUBTOTALS:
+                continue
+            # 이 서브토탈 이후 ~ 다음 경계 이전 까지가 detail 범위
+            # (자기 자신 제외, 다음 경계 제외)
+            next_b = None
+            for br in boundary_rows:
+                if br > row_idx:
+                    next_b = br
+                    break
+            if next_b is None:
+                # 섹션의 마지막 경계 — 마지막 detail 까지
+                last_row = ordered_rows[-1][1]
+                range_end = last_row
+            else:
+                range_end = next_b - 1
+            range_start = row_idx + 1
+            if range_end < range_start:
+                continue
+
+            r = start_row + n_added
+            desc_cell = ws.cell(
+                row=r, column=C,
+                value=f"  └ 검증: {display} = SUM(상세 {range_start}행~{range_end}행)",
+            )
+            desc_cell.font = check_font
+            desc_cell.alignment = Alignment(
+                horizontal="left", vertical="center", indent=2,
+            )
+            for yi in range(len(years)):
+                col = C + 1 + yi
+                col_letter = get_column_letter(col)
+                sub_ref = f"{col_letter}{row_idx}"
+                sum_range = f"{col_letter}{range_start}:{col_letter}{range_end}"
+                formula = (
+                    f'=IF(AND(ISNUMBER({sub_ref}),COUNT({sum_range})>0),'
+                    f'IF(ABS({sub_ref}-SUM({sum_range}))<=MAX(ABS({sub_ref})*0.02,1000000),'
+                    f'"✓",'
+                    f'"⚠ diff="&TEXT({sub_ref}-SUM({sum_range}),"#,##0")),'
+                    f'"")'
+                )
+                cell = ws.cell(row=r, column=col, value=formula)
+                cell.font = check_font
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.fill = check_fill_ok
+            for ci in range(len(hdr_labels)):
+                ws.cell(row=r, column=C + ci).border = THIN_BORDER
+            n_added += 1
 
     return n_added
 
