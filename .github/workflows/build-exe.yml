@@ -81,6 +81,8 @@ jobs:
           # --collect-all anthropic: SDK 내부 리소스 누락 방지.
           pyinstaller --onefile --windowed --clean --noupx \
             --name DART_QuickReport \
+            --icon=assets/app_icon.ico \
+            --add-data "assets/app_icon.ico;assets" \
             --collect-all anthropic \
             --hidden-import=openpyxl \
             --hidden-import=dotenv \

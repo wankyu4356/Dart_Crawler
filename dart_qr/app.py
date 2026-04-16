@@ -63,12 +63,27 @@ class App(tk.Tk):
         self.geometry("840x680")
         self.minsize(720, 540)
         self.configure(bg=BG)
+        self._set_icon()
         self._running = False
         self._search_after_id = None
         self._settings_visible = False
 
         self._apply_style()
         self._build_ui()
+
+    def _set_icon(self) -> None:
+        """앱 아이콘 설정 — exe 빌드 시 assets/app_icon.ico 가 내장됨."""
+        try:
+            # PyInstaller frozen: _MEIPASS 에서 찾기
+            if getattr(sys, "frozen", False):
+                base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+            else:
+                base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            ico = os.path.join(base, "assets", "app_icon.ico")
+            if os.path.isfile(ico):
+                self.iconbitmap(ico)
+        except Exception:
+            pass
 
     # ── 스타일 ────────────────────────────────────────────────────────
     def _apply_style(self) -> None:
