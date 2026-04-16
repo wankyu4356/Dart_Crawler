@@ -501,6 +501,50 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
     important = [d for d in discs if d.is_important]
     log(f"  → 전체 {len(discs)}건, 중요(A/B/D) {len(important)}건")
 
+    # 조회기간 내 공시가 0건이면 3가지 가능성을 순차 검증:
+    #  (A) 조회기간이 짧음 → 최근 6년 범위로 재확인
+    #  (B) 현재 API 키가 이 회사에 접근 못함 → 다른 키로 폴백
+    #  (C) 진짜로 외감 미대상/공시 이력 없음
+    if len(discs) == 0:
+        log(f"  ⚠ 조회기간 내 공시 0건 — 진단 시작")
+        from datetime import date as _d, timedelta as _td
+        from . import config as _cfgmod
+        today = _d.today()
+        bgn_ext = (today - _td(days=365 * 6)).strftime("%Y%m%d")
+        end_ext = today.strftime("%Y%m%d")
+        # (A) 6년 확장
+        discs_ext = disc_mod.fetch_list(c.corp_code, bgn_ext, end_ext)
+        log(f"     (A) 6년 범위 재조회: {len(discs_ext)}건")
+        if len(discs_ext) == 0:
+            # (B) 다른 API 키로 재시도
+            current_key_name = "E&F PE" if cfg.use_enf_pe_key else "default"
+            other_name = "default" if cfg.use_enf_pe_key else "E&F PE"
+            log(f"     (B) 현재 키 [{current_key_name}] 로 0건 — [{other_name}] 키로 재시도")
+            _cfgmod.use_enf_pe_key(not cfg.use_enf_pe_key)
+            discs_alt = disc_mod.fetch_list(c.corp_code, bgn_ext, end_ext)
+            log(f"         → [{other_name}] 키 결과: {len(discs_alt)}건")
+            if len(discs_alt) > 0:
+                log(f"     ✓ [{other_name}] 키로 {len(discs_alt)}건 확보 — 이쪽 키로 전환해 계속 진행")
+                # 조회기간 내 subset 재추출
+                discs = [d for d in discs_alt if bgn_de <= d.rcept_dt <= end_de]
+                log(f"     → 조회기간({bgn_de}~{end_de}) 내 {len(discs)}건 사용")
+                if len(discs) == 0 and len(discs_alt) > 0:
+                    log(f"     ▸ 조회기간 안에는 없지만 6년 내 존재 → 전체 {len(discs_alt)}건 사용")
+                    discs = discs_alt
+                important = [d for d in discs if d.is_important]
+            else:
+                # 원래 키로 복귀 (사이드이펙트 방지)
+                _cfgmod.use_enf_pe_key(cfg.use_enf_pe_key)
+                log(f"     (C) 두 키 모두 0건 — DART 에 공시 이력 자체가 없는 회사.")
+                log(f"         → 외감 대상 미달 소기업이거나 검색어가 잘못된 업체를 식별했을 가능성")
+                log(f"         → 생성되는 리포트는 Profile 시트만 포함됩니다.")
+        else:
+            log(f"  ▸ 최근 6년 범위에 {len(discs_ext)}건 존재 — "
+                f"조회기간({cfg.period_value}{cfg.period_unit}) 확장 권장")
+            # 6년 범위 결과 사용
+            discs = discs_ext
+            important = [d for d in discs if d.is_important]
+
     # 5) 재무
     if is_listed:
         log(f"[5/7] 재무 수집 (최근 {cfg.years_back}년 + 최신 분기)")
@@ -850,10 +894,20 @@ def _audit_outputs(xlsx_path: str, html_path: str, fin, biz, exec_summary,
         from openpyxl import load_workbook
         wb = load_workbook(xlsx_path, read_only=True)
         if len(wb.sheetnames) < 3:
-            issues.append({
-                "type": "excel_sheets_few",
-                "msg": f"Excel 시트 수 이상하게 적음 ({len(wb.sheetnames)}개): {wb.sheetnames}",
-            })
+            # 공시 0건이라 Profile 만 있는 케이스는 no_data_found 로 분류
+            # (자동수정 불가 — 진짜 데이터가 없음)
+            if len(discs) == 0 and not (fin.annual or fin.raw_rows):
+                issues.append({
+                    "type": "no_data_found",
+                    "msg": (f"DART 에 이 회사의 공시/재무 이력이 없음. "
+                            f"Excel 시트: {wb.sheetnames}. "
+                            f"회사명 확인 또는 외감 대상 여부 점검 필요."),
+                })
+            else:
+                issues.append({
+                    "type": "excel_sheets_few",
+                    "msg": f"Excel 시트 수 이상하게 적음 ({len(wb.sheetnames)}개): {wb.sheetnames}",
+                })
         wb.close()
     except Exception as exc:  # noqa: BLE001
         issues.append({"type": "excel_read_error",

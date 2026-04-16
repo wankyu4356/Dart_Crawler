@@ -89,10 +89,19 @@ def search_corp(
     if prefer_listed:
         listed = [c for c in pool if c.is_listed]
         pool = listed or pool
-    chosen = sorted(pool, key=lambda c: (len(c.corp_name), c.corp_name))[0]
+    pool_sorted = sorted(pool, key=lambda c: (len(c.corp_name), c.corp_name))
+    chosen = pool_sorted[0]
     if log:
         log(f"  → 선택: {chosen.corp_name} ({chosen.corp_code})"
             + (f" [종목 {chosen.stock_code}]" if chosen.is_listed else ""))
+        # 동명이인(여러 후보) 이 있으면 상위 5건 같이 안내 — 원하는 곳이 아니면
+        # 사용자가 회사명을 더 명확히 입력하도록.
+        if len(pool) > 1:
+            alts = pool_sorted[1:6]
+            log(f"  (동명/유사 {len(pool)-1}건 존재 — 상위 {len(alts)}건:)")
+            for c in alts:
+                tag = f"[종목 {c.stock_code}]" if c.is_listed else "[비상장]"
+                log(f"    • {c.corp_name} ({c.corp_code}) {tag}")
     return chosen
 
 
