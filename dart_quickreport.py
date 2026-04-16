@@ -15,28 +15,34 @@ import os
 import sys
 
 # ── 인코딩 안전망 ──────────────────────────────────────────────────────
-# PyInstaller --windowed (콘솔 없음) 에서 sys.stdout/stderr 인코딩이
-# ASCII 로 fallback → Anthropic SDK 내부에서 한글 처리 시
-# UnicodeEncodeError 발생. UTF-8 로 강제 설정.
-os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-if hasattr(sys.stdout, "encoding") and (sys.stdout.encoding or "").lower() not in (
-    "utf-8", "utf8"
-):
-    try:
-        sys.stdout = io.TextIOWrapper(
-            sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
-        )
-    except Exception:
-        pass
-if hasattr(sys.stderr, "encoding") and (sys.stderr.encoding or "").lower() not in (
-    "utf-8", "utf8"
-):
-    try:
-        sys.stderr = io.TextIOWrapper(
-            sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
-        )
-    except Exception:
-        pass
+# PyInstaller --windowed (콘솔 없음) 에서:
+#   • sys.stdout / sys.stderr 가 **None** (콘솔 자체가 없음)
+#   • 또는 인코딩이 ASCII 로 fallback
+# → Anthropic SDK(httpx) 내부에서 한글 처리 시 UnicodeEncodeError.
+# 해결: stdout/stderr 를 UTF-8 devnull 스트림으로 교체.
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
+def _ensure_utf8_stream(stream, name):
+    """stdout/stderr 를 UTF-8 스트림으로 보장. None 이면 devnull 로 교체."""
+    if stream is None:
+        # --windowed 에서 콘솔 없음 → devnull 로 대체
+        try:
+            return open(os.devnull, "w", encoding="utf-8", errors="replace")
+        except Exception:
+            return io.StringIO()
+    enc = getattr(stream, "encoding", None) or ""
+    if enc.lower().replace("-", "") not in ("utf8",):
+        try:
+            return io.TextIOWrapper(
+                stream.buffer, encoding="utf-8", errors="replace",
+                line_buffering=True,
+            )
+        except Exception:
+            pass
+    return stream
+
+sys.stdout = _ensure_utf8_stream(sys.stdout, "stdout")
+sys.stderr = _ensure_utf8_stream(sys.stderr, "stderr")
 
 # .env 자동 로드 (있을 때만)
 try:
