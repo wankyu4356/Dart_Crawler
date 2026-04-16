@@ -462,16 +462,23 @@ class _FakeResponse:
         self.content = [_FakeResponseContent(text)]
 
 
-def _raw_http_call(kwargs: Dict[str, Any], api_key: str):
-    """Anthropic SDK 우회 — requests 로 직접 REST API 호출.
+def _raw_http_call(kwargs: Dict[str, Any], api_key: str, max_retries: int = 3):
+    """Anthropic REST API 직접 호출 (SDK 완전 우회).
 
-    SDK 의 httpx 내부에서 발생하는 UnicodeEncodeError 를 bypass 한다.
+    한글 Windows + PyInstaller 에서 SDK 내부 httpx 의 HTTP 헤더 인코딩
+    크래시(ascii/latin-1 both)를 원천 차단. SDK 는 telemetry 헤더에
+    `platform.platform()` 같은 시스템 정보를 자동 삽입하는데 한글 localize
+    된 값이 들어가면 latin-1 인코딩 실패.
+
+    간단한 retry: 429/5xx/네트워크 오류 시 2^n 초 대기 (2s, 4s, 8s).
     """
     import requests
+    import time as _time
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json; charset=utf-8",
+        "user-agent": "DART-QuickReport/0.x",  # ASCII 고정 — 한글 localize 차단
     }
     payload = {
         "model": kwargs["model"],
@@ -483,24 +490,50 @@ def _raw_http_call(kwargs: Dict[str, Any], api_key: str):
     msgs = kwargs.get("messages") or []
     payload["messages"] = msgs
 
-    resp = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers=headers,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        timeout=120,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    blocks = data.get("content") or []
-    text = "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict))
-    return _FakeResponse(text)
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                data=body,
+                timeout=120,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                blocks = data.get("content") or []
+                text = "\n".join(
+                    b.get("text", "") for b in blocks if isinstance(b, dict)
+                )
+                return _FakeResponse(text)
+            # 429/5xx 재시도
+            if resp.status_code in (429,) or 500 <= resp.status_code < 600:
+                last_exc = RuntimeError(
+                    f"HTTP {resp.status_code}: {resp.text[:300]}")
+                if attempt < max_retries - 1:
+                    _time.sleep(2 ** (attempt + 1))
+                    continue
+            # 4xx 는 재시도 불가
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                _time.sleep(2 ** (attempt + 1))
+                continue
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("raw HTTP call exhausted retries without specific error")
 
 
 def _safe_create(client, **kwargs):
-    """client.messages.create() 호출 전 모든 문자열 인자를 UTF-8 clean.
+    """모든 LLM 호출을 raw HTTP 로 처리 (SDK messages.create 호출 안 함).
 
-    SDK 호출 실패 시 (UnicodeEncodeError 등 인코딩 크래시) 자동으로
-    raw HTTP fallback 으로 재시도.
+    SDK 가 client 인스턴스로 받는 api_key 만 추출해서 REST API 직접 호출.
+    이전에는 SDK 먼저 시도 후 UnicodeEncodeError 시 fallback 했으나,
+    SDK telemetry 헤더의 한글 localize 문제가 재발해서 근본 차단.
+
+    텍스트 모두 UTF-8 round-trip 으로 사전 정화.
     """
     sys_blk = kwargs.get("system")
     if isinstance(sys_blk, list):
@@ -519,14 +552,16 @@ def _safe_create(client, **kwargs):
                 for blk in c:
                     if isinstance(blk, dict) and isinstance(blk.get("text"), str):
                         blk["text"] = _clean_utf8(blk["text"])
-    try:
-        return client.messages.create(**kwargs)
-    except UnicodeEncodeError:
-        # SDK 내부 ASCII 인코딩 크래시 → raw HTTP 로 재시도
-        key = ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")
-        if not key:
-            raise
-        return _raw_http_call(kwargs, key)
+
+    # api key 추출 — client 인스턴스에서 or 환경변수
+    key = (
+        getattr(client, "api_key", None)
+        or ANTHROPIC_API_KEY
+        or os.environ.get("ANTHROPIC_API_KEY", "")
+    )
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY 미설정 — raw HTTP 호출 불가")
+    return _raw_http_call(kwargs, key)
 
 
 def extract_da_from_body(

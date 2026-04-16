@@ -196,6 +196,16 @@ class App(tk.Tk):
         ttk.Label(row_opts, text="년치", style="Field.TLabel").pack(
             side="left", padx=(4, 0))
 
+        # DART API Key 선택 (메인 화면 바로 노출)
+        row_dart = tk.Frame(core, bg=SURFACE)
+        row_dart.pack(fill="x", pady=(6, 0))
+        self.var_enf_pe_key = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            row_dart,
+            text="DART OpenAPI — E&F PE 전용 키 사용 (해제: 기본 키)",
+            variable=self.var_enf_pe_key,
+        ).pack(side="left")
+
         # 실행 버튼
         self.btn_run = ttk.Button(core, text="▶  분석 시작",
                                   style="Primary.TButton", command=self._start)
@@ -448,6 +458,7 @@ class App(tk.Tk):
             anthropic_api_key=self.var_key.get().strip() or None,
             anthropic_model=self.var_model.get().strip() or None,
             save_log=bool(self.var_save_log.get()),
+            use_enf_pe_key=bool(self.var_enf_pe_key.get()),
         )
         self._running = True
         self.btn_run.config(state="disabled", text="  분석 중…")

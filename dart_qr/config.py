@@ -5,10 +5,18 @@ import os
 
 # ── DART OpenAPI ──────────────────────────────────────────────────────────
 # 1차 우선: 환경변수. 없으면 v10에서 쓰던 기본 키 사용 (개인 키라 배포 전 교체 권장).
-DART_API_KEY: str = os.getenv(
-    "DART_API_KEY",
-    "ba43f1b18f4b189c4a6652a12632d5220618dfa5",
-)
+# DART OpenAPI 키 — 기본 키 + E&F PE 전용 키 (2개 중 선택)
+DEFAULT_DART_KEY = "ba43f1b18f4b189c4a6652a12632d5220618dfa5"
+ENF_PE_DART_KEY  = "aa43415e31ef66e6ae4d5402d2c02ebd8f9177ee"
+
+# 런타임 전환용 — dart_api 모듈은 config.DART_API_KEY 를 실시간 참조
+DART_API_KEY: str = os.getenv("DART_API_KEY", DEFAULT_DART_KEY)
+
+
+def use_enf_pe_key(enabled: bool = True) -> None:
+    """GUI 의 'E&F PE' 체크박스 변경 시 호출 — API 키 런타임 교체."""
+    global DART_API_KEY
+    DART_API_KEY = ENF_PE_DART_KEY if enabled else DEFAULT_DART_KEY
 DART_BASE_URL: str = "https://opendart.fss.or.kr/api"
 
 # ── Anthropic ────────────────────────────────────────────────────────────

@@ -56,6 +56,7 @@ class RunConfig:
     anthropic_api_key: Optional[str] = None
     anthropic_model: Optional[str] = None   # None 이면 config.ANTHROPIC_MODEL 사용
     save_log: bool = True             # 상세 로그 파일(_log_회사_시각.txt) 저장 여부
+    use_enf_pe_key: bool = False      # DART OpenAPI: E&F PE 전용 키 사용 여부
 
     def needs_llm(self) -> bool:
         """어느 하나라도 Claude 가 필요한 작업이 켜져 있는가?"""
@@ -361,7 +362,11 @@ def _fill_da_from_body(
 
 
 def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
-    # ─── 0. 상세 로그 파일 자동 생성 (troubleshoot 용) ──────────────
+    # ─── 0-a. DART API 키 선택 (E&F PE 토글 반영) ──────────────────
+    from . import config as _cfgmod
+    _cfgmod.use_enf_pe_key(bool(cfg.use_enf_pe_key))
+
+    # ─── 0-b. 상세 로그 파일 자동 생성 (troubleshoot 용) ────────────
     os.makedirs(cfg.output_dir, exist_ok=True)
     _log_fh = None
     _log_path = None
@@ -403,6 +408,7 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
             log(f"[SDK] anthropic {_anth.__version__}")
         except Exception:
             pass
+        log(f"[DART] API key = {'E&F PE' if cfg.use_enf_pe_key else 'default'}")
         log(f"[설정] company={cfg.company} period={cfg.period_value}{cfg.period_unit} "
             f"years_back={cfg.years_back} body_limit={cfg.body_limit} "
             f"model={cfg.anthropic_model or 'default'}")

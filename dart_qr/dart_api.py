@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from . import config as _cfg
 from .config import (
-    DART_API_KEY,
     DART_BASE_URL,
     MAX_RETRIES,
     REQUEST_DELAY,
@@ -40,7 +40,7 @@ def get_json(endpoint: str, **params) -> Dict[str, Any]:
     네트워크 장애 시 최대 MAX_RETRIES 번 재시도 (exp backoff).
     """
     url = f"{DART_BASE_URL}/{endpoint}"
-    full = {**params, "crtfc_key": DART_API_KEY}
+    full = {**params, "crtfc_key": _cfg.DART_API_KEY}
     last_err = ""
     for attempt in range(MAX_RETRIES):
         try:
@@ -70,7 +70,7 @@ def get_list(endpoint: str, **params) -> List[Dict[str, Any]]:
 def get_binary(endpoint: str, **params) -> Optional[bytes]:
     """document.xml / fnlttXbrl.xml 등 ZIP 바이너리."""
     url = f"{DART_BASE_URL}/{endpoint}"
-    full = {**params, "crtfc_key": DART_API_KEY}
+    full = {**params, "crtfc_key": _cfg.DART_API_KEY}
     for attempt in range(MAX_RETRIES):
         try:
             r = _sess().get(url, params=full, timeout=REQUEST_TIMEOUT)

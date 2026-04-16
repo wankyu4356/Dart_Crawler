@@ -817,6 +817,9 @@ def _canonical_ord(sj: str, name: str) -> int:
     """표준 정렬 우선순위. 매치 없으면 5000 (중간값).
 
     긴 키워드 먼저 매칭 (매출원가가 매출 보다 먼저 매칭되도록).
+    BS 는 하드코딩 리스트 실패 시 **유동/비유동 + 부채/자산 휴리스틱** 으로
+    2차 분류 — 종속기업투자/리스부채/포괄손익누계액 같은 비표준 계정을
+    적절한 섹션으로 자동 배치.
     """
     n = (name or "").replace(" ", "")
     table = {
@@ -824,10 +827,35 @@ def _canonical_ord(sj: str, name: str) -> int:
         "BS": _BS_CANONICAL,
         "CF": _CF_CANONICAL,
     }.get(sj, [])
-    # 키워드 긴 것부터 검사
+    # 1차: 하드코딩 키워드 매칭 (긴 것 먼저)
     for kw, rank in sorted(table, key=lambda p: -len(p[0])):
         if kw in n:
             return rank
+
+    # 2차 BS 휴리스틱: 유동/비유동 + 부채/자산/자본 조합
+    if sj == "BS":
+        # 자본 항목 (부호 없는 자본 구성요소)
+        if any(k in n for k in (
+            "잉여금", "자본금", "발행초과금", "포괄손익누계액",
+            "기타자본", "자기주식",
+        )):
+            return 105
+        has_c  = "유동" in n and "비유동" not in n
+        has_nc = "비유동" in n
+        is_liab  = any(k in n for k in (
+            "부채", "차입", "사채", "충당", "리스부채", "미지급",
+        ))
+        is_asset = any(k in n for k in (
+            "자산", "채권", "금융", "투자", "급여자산", "주식", "지분",
+        ))
+        if has_c  and is_liab:   return 65   # 유동부채 영역
+        if has_nc and is_liab:   return 75   # 비유동부채 영역
+        if has_c  and is_asset:  return 15   # 유동자산 영역
+        if has_nc and is_asset:  return 25   # 비유동자산 영역
+        # 유동/비유동 라벨 없지만 투자/관계기업 — 통상 비유동자산
+        if any(k in n for k in ("관계기업", "종속기업", "공동기업", "투자부동산")):
+            return 28
+
     return 5000  # 매치 없는 잡다한 라인은 아래로
 
 
