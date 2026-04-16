@@ -610,34 +610,49 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         return
 
     # 피벗: (sj_div, account_id, account_nm, ord) -> {year: amount}
+    # ─── pivot: (sj_div, 정규화된 계정명) 으로 키를 단순화해 중복 제거.
+    # 같은 계정이 `ifrs-full_*` 와 `dart_*` 두 account_id 로 오거나,
+    # CFS/OFS raw 에 양쪽 다 있어 중복 행이 생기는 문제 해결.
+    # 같은 연도에 값이 충돌하면 절댓값 최대치를 채택 (재무상태표는 본체가 큼).
     pivot: Dict[tuple, Dict[int, float]] = {}
-    meta: Dict[tuple, Dict[str, str]] = {}      # account_detail / currency / sj_nm
+    meta: Dict[tuple, Dict[str, Any]] = {}
     years_seen: set = set()
+
+    def _norm_nm(s: str) -> str:
+        return (s or "").replace(" ", "").replace("\u3000", "").strip()
 
     for r in fin.raw_rows:
         sj = (r.get("sj_div") or "").upper()
-        aid = (r.get("account_id") or "").strip()
         anm = (r.get("account_nm") or "").strip()
+        if not anm:
+            continue
+        call_year = r.get("_call_year")
+        if not isinstance(call_year, int):
+            continue
+        key = (sj, _norm_nm(anm))
+        # ord 는 정렬용으로만 사용 (첫 번째 값 유지)
         ord_s = r.get("ord") or "99999"
         try:
             ordn = int(str(ord_s).replace(",", ""))
         except ValueError:
             ordn = 99999
-        call_year = r.get("_call_year")
-        if not isinstance(call_year, int):
-            continue
-        key = (sj, aid, anm, ordn)
-        meta.setdefault(key, {
-            "sj_nm":          r.get("sj_nm", ""),
-            "account_detail": r.get("account_detail", ""),
-            "currency":       r.get("currency", ""),
+        m = meta.setdefault(key, {
+            "display_nm": anm,  # 공백 있는 표시용 이름 (첫 등장분)
+            "ord": ordn,
+            "currency": r.get("currency", ""),
         })
+        # ord 는 최솟값 유지 (더 중요한 라인이 위로)
+        if ordn < m["ord"]:
+            m["ord"] = ordn
         for period, yoff in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
             year = call_year - yoff
             amt = _to_num(r.get(f"{period}_amount"))
             if amt is None:
                 continue
-            pivot.setdefault(key, {}).setdefault(year, amt)
+            slot = pivot.setdefault(key, {})
+            existing = slot.get(year)
+            if existing is None or abs(amt) > abs(existing):
+                slot[year] = amt
             years_seen.add(year)
 
     if not years_seen:
@@ -669,7 +684,10 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
 
     r = hdr_row + 1
     for sj in SJ_ORDER:
-        sj_keys = sorted([k for k in pivot if k[0] == sj], key=lambda k: k[3])
+        sj_keys = sorted(
+            [k for k in pivot if k[0] == sj],
+            key=lambda k: (meta.get(k, {}).get("ord", 99999), k[1]),
+        )
         if not sj_keys:
             continue
         # 섹션 배너
@@ -684,9 +702,10 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         r += 1
 
         for idx, key in enumerate(sj_keys):
-            sj_, aid, anm, ordn = key
+            m = meta.get(key, {})
+            display_nm = m.get("display_nm", key[1])
             # 계정명
-            ws.cell(row=r, column=C, value=anm).font = BODY_FONT
+            ws.cell(row=r, column=C, value=display_nm).font = BODY_FONT
             # 연도별 금액
             for yi, y in enumerate(years):
                 v = pivot[key].get(y)
