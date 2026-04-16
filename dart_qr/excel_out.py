@@ -604,16 +604,119 @@ SJ_LABEL = {
 }
 
 
+# ── 재무제표_상세: 계정 정렬·분류 헬퍼 ─────────────────────────────────
+# 서브토탈 / 합계 라인 감지 — 볼드 + 진한 배경 + 상단 테두리 적용
+_SUBTOTAL_KEYWORDS = (
+    "총계",          # 자산총계, 부채총계, 자본총계
+    "총이익",        # 매출총이익
+    "총손익",        # 매출총손익
+    "순이익",        # 당기순이익, 분기순이익, 반기순이익
+    "순손실",        # 당기순손실
+    "영업이익",      # 영업이익, 영업이익(손실)
+    "영업손실",
+    "영업손익",
+    "총포괄손익",    # 총포괄손익 (CIS 최종 라인)
+    "포괄손익",      # 포괄손익, 비지배지분
+    "법인세차감전",  # 법인세비용차감전순이익
+    "차감전순",
+    "현금흐름",      # 영업활동현금흐름, 투자활동현금흐름, 재무활동현금흐름
+    "현금의증가",
+    "현금의감소",
+    "당기말",        # 자본변동표 당기말 잔액
+    "전기말",
+)
+
+# 섹션 구분자 (Ⅰ. 유동자산, Ⅱ. 비유동자산 …) 감지
+_SECTION_PREFIX_RE = _re.compile(r"^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]\s*\.")
+
+
+def _is_subtotal(name: str) -> bool:
+    n = (name or "").replace(" ", "")
+    return any(k in n for k in _SUBTOTAL_KEYWORDS)
+
+
+def _is_section_header(name: str) -> bool:
+    return bool(_SECTION_PREFIX_RE.match((name or "").strip()))
+
+
+# K-IFRS 표준 계정 정렬 우선순위 (낮을수록 위쪽)
+# DART API 의 ord 가 연도별로 불일치할 때를 대비한 canonical order.
+_IS_CANONICAL = [
+    # 손익계산서 / 포괄손익계산서 표준 순서
+    ("매출", 10), ("수익", 11), ("영업수익", 12),
+    ("매출원가", 20), ("영업비용", 21),
+    ("매출총이익", 30), ("매출총손실", 31),
+    ("판매비와관리비", 40), ("판매비", 41), ("관리비", 42), ("판관비", 43),
+    ("영업이익", 50), ("영업손실", 51),
+    ("기타수익", 60), ("기타이익", 61),
+    ("기타비용", 65), ("기타손실", 66),
+    ("금융수익", 70), ("이자수익", 71), ("금융원가", 75), ("금융비용", 76), ("이자비용", 77),
+    ("지분법이익", 80), ("지분법손실", 81),
+    ("법인세차감전", 85), ("차감전순이익", 86),
+    ("법인세비용", 90), ("법인세", 91),
+    ("계속영업", 92), ("중단영업", 93),
+    ("당기순이익", 100), ("당기순손실", 101), ("분기순이익", 102), ("반기순이익", 103),
+    ("기타포괄손익", 110),
+    ("총포괄손익", 120),
+    ("주당이익", 130), ("기본주당", 131), ("희석주당", 132),
+]
+
+_BS_CANONICAL = [
+    ("유동자산", 10),
+    ("현금", 11), ("단기금융", 12), ("매출채권", 13), ("재고", 14),
+    ("비유동자산", 20),
+    ("유형자산", 21), ("무형자산", 22), ("투자부동산", 23), ("사용권", 24),
+    ("자산총계", 50),
+    ("유동부채", 60), ("매입채무", 61), ("단기차입", 62),
+    ("비유동부채", 70), ("장기차입", 71), ("사채", 72),
+    ("부채총계", 90),
+    ("자본금", 100), ("자본잉여", 101), ("이익잉여", 102), ("기타자본", 103),
+    ("지배기업", 110), ("비지배지분", 111),
+    ("자본총계", 130),
+]
+
+_CF_CANONICAL = [
+    ("영업활동", 10),
+    ("투자활동", 20),
+    ("재무활동", 30),
+    ("현금의증가", 40), ("현금의감소", 41),
+    ("기초현금", 50),
+    ("기말현금", 60),
+]
+
+
+def _canonical_ord(sj: str, name: str) -> int:
+    """표준 정렬 우선순위. 매치 없으면 5000 (중간값).
+
+    긴 키워드 먼저 매칭 (매출원가가 매출 보다 먼저 매칭되도록).
+    """
+    n = (name or "").replace(" ", "")
+    table = {
+        "IS": _IS_CANONICAL, "CIS": _IS_CANONICAL,
+        "BS": _BS_CANONICAL,
+        "CF": _CF_CANONICAL,
+    }.get(sj, [])
+    # 키워드 긴 것부터 검사
+    for kw, rank in sorted(table, key=lambda p: -len(p[0])):
+        if kw in n:
+            return rank
+    return 5000  # 매치 없는 잡다한 라인은 아래로
+
+
 def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
-    """fnlttSinglAcntAll 의 raw rows 를 계정별 시계열로 피벗해 한 시트에 기록."""
+    """fnlttSinglAcntAll 의 raw rows 를 계정별 시계열로 피벗해 한 시트에 기록.
+
+    설계:
+    - (sj_div, 정규화계정명) 키로 중복 제거
+    - **가장 최근 연도의 ord** 를 canonical 정렬 기준으로 삼음
+    - 같은 영역 안에서는 K-IFRS 표준 순서 (_canonical_ord) 로 한번 더 안정화
+    - 서브토탈/합계 라인은 볼드 + 상단 테두리 + 진한 배경
+    - 섹션 헤더(Ⅰ. Ⅱ.) 는 medium bold
+    - 일반 라인은 들여쓰기 + 얕은 폰트
+    """
     if not fin.raw_rows:
         return
 
-    # 피벗: (sj_div, account_id, account_nm, ord) -> {year: amount}
-    # ─── pivot: (sj_div, 정규화된 계정명) 으로 키를 단순화해 중복 제거.
-    # 같은 계정이 `ifrs-full_*` 와 `dart_*` 두 account_id 로 오거나,
-    # CFS/OFS raw 에 양쪽 다 있어 중복 행이 생기는 문제 해결.
-    # 같은 연도에 값이 충돌하면 절댓값 최대치를 채택 (재무상태표는 본체가 큼).
     pivot: Dict[tuple, Dict[int, float]] = {}
     meta: Dict[tuple, Dict[str, Any]] = {}
     years_seen: set = set()
@@ -621,7 +724,14 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
     def _norm_nm(s: str) -> str:
         return (s or "").replace(" ", "").replace("\u3000", "").strip()
 
-    for r in fin.raw_rows:
+    # 최신 연도의 ord 를 우선 채택하기 위해 call_year 가 큰 것부터 처리
+    sorted_rows = sorted(
+        fin.raw_rows,
+        key=lambda r: r.get("_call_year", 0) or 0,
+        reverse=True,
+    )
+
+    for r in sorted_rows:
         sj = (r.get("sj_div") or "").upper()
         anm = (r.get("account_nm") or "").strip()
         if not anm:
@@ -630,20 +740,20 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         if not isinstance(call_year, int):
             continue
         key = (sj, _norm_nm(anm))
-        # ord 는 정렬용으로만 사용 (첫 번째 값 유지)
         ord_s = r.get("ord") or "99999"
         try:
             ordn = int(str(ord_s).replace(",", ""))
         except ValueError:
             ordn = 99999
-        m = meta.setdefault(key, {
-            "display_nm": anm,  # 공백 있는 표시용 이름 (첫 등장분)
-            "ord": ordn,
-            "currency": r.get("currency", ""),
-        })
-        # ord 는 최솟값 유지 (더 중요한 라인이 위로)
-        if ordn < m["ord"]:
-            m["ord"] = ordn
+
+        if key not in meta:
+            # 최초(=가장 최신 연도) 등장 시의 ord 만 고정 — 이후 재정의 안 함
+            meta[key] = {
+                "display_nm": anm,
+                "ord": ordn,
+                "year_seen": call_year,
+                "currency": r.get("currency", ""),
+            }
         for period, yoff in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
             year = call_year - yoff
             amt = _to_num(r.get(f"{period}_amount"))
@@ -662,8 +772,7 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
     ws = wb.create_sheet("재무제표_상세")
     ws.sheet_view.showGridLines = False
 
-    # 좌측 여백
-    C = 2  # 콘텐츠 시작 컬럼
+    C = 2  # 콘텐츠 시작 컬럼 (좌측 여백)
     ws.column_dimensions["A"].width = 3
 
     # 타이틀
@@ -671,7 +780,7 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         bold=True, size=14, color=_THEME_HEX, name="Calibri")
     ws.row_dimensions[1].height = 30
 
-    # 헤더 행 (row 3)
+    # 헤더
     hdr_row = 3
     hdr_labels = ["계정명", *[f"{y}" for y in years]]
     for ci, h in enumerate(hdr_labels):
@@ -682,14 +791,30 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         cell.border = HEADER_BORDER
     ws.row_dimensions[hdr_row].height = 26
 
+    # 서브토탈 스타일
+    subtotal_fill = PatternFill("solid", fgColor="E8EDF5")
+    subtotal_font = Font(bold=True, color=_THEME_HEX, name="Calibri", size=11)
+    section_font = Font(bold=True, color="263238", name="Calibri", size=10)
+    normal_font = BODY_FONT
+    subtotal_top = Border(
+        top=Side(style="thin", color=_THEME_HEX),
+        bottom=Side(style="thin", color=_THEME_HEX),
+        left=Side(style="thin", color="BDBDBD"),
+        right=Side(style="thin", color="BDBDBD"),
+    )
+
     r = hdr_row + 1
     for sj in SJ_ORDER:
-        sj_keys = sorted(
-            [k for k in pivot if k[0] == sj],
-            key=lambda k: (meta.get(k, {}).get("ord", 99999), k[1]),
-        )
+        sj_keys = [k for k in pivot if k[0] == sj]
         if not sj_keys:
             continue
+        # 정렬: (canonical_ord, API_ord, 이름) 3단계
+        sj_keys.sort(key=lambda k: (
+            _canonical_ord(k[0], meta.get(k, {}).get("display_nm", k[1])),
+            meta.get(k, {}).get("ord", 99999),
+            k[1],
+        ))
+
         # 섹션 배너
         label = SJ_LABEL.get(sj, sj)
         ws.cell(row=r, column=C, value=label).font = Font(
@@ -701,31 +826,59 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         ws.row_dimensions[r].height = 22
         r += 1
 
-        for idx, key in enumerate(sj_keys):
+        for key in sj_keys:
             m = meta.get(key, {})
             display_nm = m.get("display_nm", key[1])
-            # 계정명
-            ws.cell(row=r, column=C, value=display_nm).font = BODY_FONT
+            is_sub = _is_subtotal(display_nm)
+            is_section = _is_section_header(display_nm)
+            # 들여쓰기: 서브토탈/섹션은 들여쓰기 0, 일반은 1
+            indent_val = 0 if (is_sub or is_section) else 1
+
+            # 계정명 셀
+            name_cell = ws.cell(row=r, column=C, value=display_nm)
+            name_cell.alignment = Alignment(
+                horizontal="left", vertical="center", indent=indent_val,
+            )
+            if is_sub:
+                name_cell.font = subtotal_font
+            elif is_section:
+                name_cell.font = section_font
+            else:
+                name_cell.font = normal_font
+
             # 연도별 금액
             for yi, y in enumerate(years):
                 v = pivot[key].get(y)
                 cell = ws.cell(row=r, column=C + 1 + yi, value=v)
                 cell.number_format = KRW_FMT
                 cell.alignment = RIGHT_ALIGN
-                cell.font = BODY_FONT
-            # zebra striping
-            if idx % 2 == 0:
+                if is_sub:
+                    cell.font = subtotal_font
+                elif is_section:
+                    cell.font = section_font
+                else:
+                    cell.font = normal_font
+
+            # 배경 + 테두리
+            if is_sub:
                 for ci in range(len(hdr_labels)):
-                    ws.cell(row=r, column=C + ci).fill = PatternFill(
-                        "solid", fgColor="F7F9FC")
-            # border
-            for ci in range(len(hdr_labels)):
-                ws.cell(row=r, column=C + ci).border = THIN_BORDER
+                    c = ws.cell(row=r, column=C + ci)
+                    c.fill = subtotal_fill
+                    c.border = subtotal_top
+            elif is_section:
+                for ci in range(len(hdr_labels)):
+                    c = ws.cell(row=r, column=C + ci)
+                    c.fill = PatternFill("solid", fgColor="F4F7FB")
+                    c.border = THIN_BORDER
+            else:
+                for ci in range(len(hdr_labels)):
+                    ws.cell(row=r, column=C + ci).border = THIN_BORDER
+
             r += 1
         r += 1  # 섹션 간 빈 행
 
     # 열 너비
-    ws.column_dimensions[get_column_letter(C)].width = 28  # 계정명
+    ws.column_dimensions[get_column_letter(C)].width = 32  # 계정명
     for yi in range(len(years)):
         ws.column_dimensions[get_column_letter(C + 1 + yi)].width = 20
     ws.freeze_panes = ws.cell(row=hdr_row + 1, column=C + 1).coordinate

@@ -622,8 +622,149 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
     log(f"  ✓ Excel:  {xlsx_path}")
     log(f"  ✓ HTML:  {html_path}")
 
+    # ─── 9) 출력 자체 검수 (self-audit) ───────────────────────────────
+    log(f"\n[자체 검수] 출력 파일 무결성 점검")
+    issues = _audit_outputs(xlsx_path, html_path, fin, biz, exec_summary,
+                            footnotes, discs, log)
+    if issues:
+        log(f"  ⚠ {len(issues)}건 이슈 발견:")
+        for issue in issues:
+            log(f"    • [{issue['type']}] {issue['msg']}")
+        # 자동 수정 — 빈 섹션은 None 처리해 HTML 에서 아예 숨김
+        fixed = 0
+        for issue in issues:
+            if issue["type"] == "exec_empty":
+                exec_summary = None
+                fixed += 1
+            elif issue["type"] == "biz_empty":
+                biz = None
+                fixed += 1
+        if fixed:
+            log(f"  ↻ {fixed}건 자동 수정 — 파일 재저장")
+            write_excel(xlsx_path, profile, fin, sh, discs, period_label,
+                        exec_summary=exec_summary, business=biz, footnotes=footnotes)
+            write_html(html_path, profile, fin, sh, discs, period_label,
+                       exec_summary=exec_summary, business=biz, footnotes=footnotes)
+            # 재검수
+            issues2 = _audit_outputs(xlsx_path, html_path, fin, biz, exec_summary,
+                                     footnotes, discs, log)
+            remain = [i for i in issues2 if i["type"] not in ("exec_empty", "biz_empty")]
+            if remain:
+                log(f"  ⚠ 자동수정 불가 잔존 이슈 {len(remain)}건 (검토 필요)")
+            else:
+                log(f"  ✓ 재검수 통과")
+        else:
+            log(f"  ℹ 자동수정 가능 이슈 없음 (수동 검토 권장)")
+    else:
+        log(f"  ✓ 모든 검수 통과")
+
     return RunResult(
         excel_path=xlsx_path, html_path=html_path,
         corp_name=profile.corp_name,
         n_disclosures=len(discs), n_analyzed=n_analyzed,
     )
+
+
+# ── 자체 검수 헬퍼 ─────────────────────────────────────────────────────
+def _audit_outputs(xlsx_path: str, html_path: str, fin, biz, exec_summary,
+                   footnotes, discs, log: LogFn) -> List[Dict[str, Any]]:
+    """생성된 Excel/HTML 파일을 열어 무결성 체크.
+
+    반환: [{"type":"missing_da","msg":"..."}, ...] 이슈 리스트.
+    이슈 없으면 빈 리스트.
+    """
+    issues: List[Dict[str, Any]] = []
+
+    # 1) 파일 생성 여부
+    if not os.path.isfile(xlsx_path) or os.path.getsize(xlsx_path) < 5000:
+        issues.append({"type": "excel_missing",
+                       "msg": f"Excel 파일 생성 실패/너무 작음: {xlsx_path}"})
+    if not os.path.isfile(html_path) or os.path.getsize(html_path) < 5000:
+        issues.append({"type": "html_missing",
+                       "msg": f"HTML 파일 생성 실패/너무 작음: {html_path}"})
+
+    # 2) HTML 마크다운 누수 체크 (``` 코드펜스, ** 볼드 등이 렌더 안 되고 표시)
+    try:
+        with open(html_path, "r", encoding="utf-8") as f:
+            html_text = f.read()
+        if "```json" in html_text or "```\n" in html_text:
+            issues.append({"type": "html_md_leak",
+                           "msg": "HTML 에 ```json 코드펜스 노출 — LLM 응답 파싱 실패 잔존"})
+        # Exec summary 섹션이 비어있는지 ("분석된 공시가 없어" 문구 검사)
+        if exec_summary and "분석된 공시가 없어" in (exec_summary or ""):
+            issues.append({"type": "exec_empty",
+                           "msg": "Executive Summary 가 빈 상태 — 공시 요약 실패"})
+    except Exception as exc:  # noqa: BLE001
+        issues.append({"type": "html_read_error",
+                       "msg": f"HTML 재읽기 실패: {exc}"})
+
+    # 3) D&A 커버리지 — annual 중 da=None 인 연도 카운트
+    if fin.annual:
+        missing_da = [y.year for y in fin.annual if y.values.get("da") is None]
+        if missing_da:
+            issues.append({
+                "type": "missing_da",
+                "msg": f"D&A 누락 연도: {missing_da}",
+                "years": missing_da,
+            })
+        missing_rev = [y.year for y in fin.annual if y.values.get("revenue") is None]
+        if missing_rev:
+            issues.append({
+                "type": "missing_revenue",
+                "msg": f"매출액 누락 연도: {missing_rev}",
+                "years": missing_rev,
+            })
+
+    # 4) Business Profile / Footnotes 완전 공란 여부 — 경고만 (자동수정 불가)
+    if biz is not None:
+        has_content = any([
+            (biz.get("business_summary") or "").strip(),
+            biz.get("products"), biz.get("segments"),
+            biz.get("major_customers"), biz.get("major_suppliers"),
+            biz.get("key_insights"),
+        ])
+        if not has_content:
+            issues.append({"type": "biz_empty",
+                           "msg": "Business Profile 모든 섹션 비어있음"})
+
+    # 5) LLM 에러 다수 발생 체크
+    err_count = sum(1 for d in discs if d.llm_status == "error")
+    ok_count = sum(1 for d in discs if d.llm_status == "ok")
+    if err_count > 0 and ok_count == 0:
+        issues.append({
+            "type": "llm_all_failed",
+            "msg": f"LLM 호출 전부 실패 ({err_count}건) — 인코딩/API 키/네트워크 의심",
+        })
+
+    # 6) Excel 파일 기본 무결성 (sheet 수)
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(xlsx_path, read_only=True)
+        if len(wb.sheetnames) < 3:
+            issues.append({
+                "type": "excel_sheets_few",
+                "msg": f"Excel 시트 수 이상하게 적음 ({len(wb.sheetnames)}개): {wb.sheetnames}",
+            })
+        wb.close()
+    except Exception as exc:  # noqa: BLE001
+        issues.append({"type": "excel_read_error",
+                       "msg": f"Excel 재읽기 실패: {exc}"})
+
+    return issues
+
+
+def _apply_output_fixes(issues, fin, biz, exec_summary, footnotes) -> None:
+    """자동 수정 가능한 이슈 처리.
+
+    현재 지원하는 자동수정:
+    - exec_empty: exec_summary 를 None 으로 치환 (HTML 에서 섹션 자체 제거)
+    - biz_empty: biz 를 None 으로 치환 (HTML 에서 섹션 자체 제거)
+    - html_md_leak: (수정 불가 — 재생성만 해도 고쳐지지 않음, 경고만)
+    - missing_da: (이미 _fill_da_per_year 에서 시도함, 재시도 해도 같은 결과)
+    """
+    for issue in issues:
+        if issue["type"] == "exec_empty":
+            # nonlocal 로 참조 수정 불가 — caller 가 None 으로 교체해야 함
+            # 여기서는 값을 직접 변경 불가. orchestrator 에서 재저장 전 처리 필요.
+            pass
+    # 실제 값 변경은 caller (run_quickreport) 에서 수행
