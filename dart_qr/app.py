@@ -147,37 +147,44 @@ class App(tk.Tk):
         core = ttk.Frame(self, style="Card.TFrame", padding=(20, 16, 20, 12))
         core.pack(fill="x", padx=16, pady=(12, 0))
 
-        # 회사명 (row 0)
-        ttk.Label(core, text="회사명", style="Field.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 8))
+        # 회사명
+        row_name = tk.Frame(core, bg=SURFACE)
+        row_name.pack(fill="x", pady=(0, 8))
+        ttk.Label(row_name, text="회사명", style="Field.TLabel").pack(
+            side="left", padx=(0, 10))
         self.var_company = tk.StringVar()
-        self.cmb_company = ttk.Combobox(core, textvariable=self.var_company, width=36)
-        self.cmb_company.grid(row=0, column=1, columnspan=3, sticky="we", pady=(0, 8))
+        self.cmb_company = ttk.Combobox(row_name, textvariable=self.var_company)
+        self.cmb_company.pack(side="left", fill="x", expand=True)
         self.cmb_company.bind("<KeyRelease>", self._on_company_key)
 
-        # 기간 + 재무연수 (row 1)
-        ttk.Label(core, text="공시 조회", style="Field.TLabel").grid(
-            row=1, column=0, sticky="w", padx=(0, 8))
+        # 기간 + 재무연수 (한 줄에 모아서)
+        row_opts = tk.Frame(core, bg=SURFACE)
+        row_opts.pack(fill="x", pady=(0, 4))
+        ttk.Label(row_opts, text="공시 조회", style="Field.TLabel").pack(
+            side="left", padx=(0, 6))
         self.var_period = tk.IntVar(value=3)
-        ttk.Spinbox(core, from_=1, to=120, width=5,
-                    textvariable=self.var_period).grid(row=1, column=1, sticky="w")
+        ttk.Spinbox(row_opts, from_=1, to=120, width=4,
+                    textvariable=self.var_period).pack(side="left")
         self.var_unit = tk.StringVar(value="년")
-        ttk.Combobox(core, textvariable=self.var_unit, values=["년", "개월"],
-                     width=5, state="readonly").grid(row=1, column=2, sticky="w", padx=4)
-        ttk.Label(core, text="재무", style="Field.TLabel").grid(
-            row=1, column=3, sticky="e", padx=(12, 4))
+        ttk.Combobox(row_opts, textvariable=self.var_unit, values=["년", "개월"],
+                     width=4, state="readonly").pack(side="left", padx=(4, 0))
+
+        # 구분선
+        ttk.Label(row_opts, text="│", style="Field.TLabel").pack(
+            side="left", padx=(16, 16))
+
+        ttk.Label(row_opts, text="재무", style="Field.TLabel").pack(
+            side="left", padx=(0, 6))
         self.var_years = tk.IntVar(value=4)
-        ttk.Spinbox(core, from_=1, to=10, width=5,
-                    textvariable=self.var_years).grid(row=1, column=4, sticky="w")
-        ttk.Label(core, text="년치", style="Field.TLabel").grid(
-            row=1, column=5, sticky="w")
+        ttk.Spinbox(row_opts, from_=1, to=10, width=4,
+                    textvariable=self.var_years).pack(side="left")
+        ttk.Label(row_opts, text="년치", style="Field.TLabel").pack(
+            side="left", padx=(4, 0))
 
-        core.grid_columnconfigure(1, weight=1)
-
-        # 실행 버튼 (row 2)
+        # 실행 버튼
         self.btn_run = ttk.Button(core, text="▶  분석 시작",
                                   style="Primary.TButton", command=self._start)
-        self.btn_run.grid(row=2, column=0, columnspan=6, sticky="we", pady=(12, 0))
+        self.btn_run.pack(fill="x", pady=(10, 0))
 
         # ─── 3. 설정 토글
         toggle_bar = tk.Frame(self, bg=BG)
@@ -236,35 +243,38 @@ class App(tk.Tk):
                         variable=self.var_da_llm).grid(
             row=2, column=0, sticky="w", padx=2, pady=(0, 4))
 
-        # 모델 + 분석 건수 (row 3)
+        # AI 모델 (row 3)
         ttk.Label(right, text="AI 모델", style="Field.TLabel").grid(
             row=3, column=0, sticky="w", padx=2, pady=2)
         self.var_model = tk.StringVar(value=cfgmod.ANTHROPIC_MODEL)
-        self.var_limit = tk.IntVar(value=20)
-        model_row = tk.Frame(right, bg=SURFACE)
-        model_row.grid(row=3, column=1, sticky="we", padx=2)
-        ttk.Combobox(model_row, textvariable=self.var_model,
+        ttk.Combobox(right, textvariable=self.var_model,
                      values=cfgmod.AVAILABLE_MODELS,
-                     width=20, state="readonly").pack(side="left")
-        ttk.Label(model_row, text=" 공시 분석 상한:",
-                  style="Field.TLabel").pack(side="left", padx=(8, 2))
-        ttk.Spinbox(model_row, from_=1, to=200, width=4,
-                    textvariable=self.var_limit).pack(side="left")
-        ttk.Label(model_row, text="건", style="Field.TLabel").pack(side="left")
+                     width=22, state="readonly").grid(
+            row=3, column=1, sticky="w", padx=2)
 
-        # API Key (row 4) — 파일 자동 로드 지원
+        # 분석 건수 (row 4)
+        self.var_limit = tk.IntVar(value=20)
+        ttk.Label(right, text="분석 상한", style="Field.TLabel").grid(
+            row=4, column=0, sticky="w", padx=2, pady=2)
+        limit_row = tk.Frame(right, bg=SURFACE)
+        limit_row.grid(row=4, column=1, sticky="w", padx=2)
+        ttk.Spinbox(limit_row, from_=1, to=200, width=4,
+                    textvariable=self.var_limit).pack(side="left")
+        ttk.Label(limit_row, text=" 건 (공시 본문 분석 최대 건수)",
+                  style="Field.TLabel").pack(side="left")
+
+        # API Key (row 5) — 파일 자동 로드 지원
         key_label = "API Key"
         if cfgmod.ANTHROPIC_API_KEY:
-            key_label = "API Key ✓"  # 파일/환경변수에서 로드됨
+            key_label = "API Key ✓"
         ttk.Label(right, text=key_label, style="Field.TLabel").grid(
-            row=4, column=0, sticky="w", padx=2, pady=2)
+            row=5, column=0, sticky="w", padx=2, pady=2)
         self.var_key = tk.StringVar(value=cfgmod.ANTHROPIC_API_KEY)
         ttk.Entry(right, textvariable=self.var_key, show="•", width=32).grid(
-            row=4, column=1, sticky="we", padx=2)
-        # 힌트: api_key.txt 파일 자동 로드 안내
-        ttk.Label(right, text="직접 입력 또는 exe 폴더에 api_key.txt 파일 자동 인식",
+            row=5, column=1, sticky="we", padx=2)
+        ttk.Label(right, text="직접 입력 또는 exe 폴더에 api_key.txt 자동 인식",
                   style="Field.TLabel").grid(
-            row=5, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 2))
+            row=6, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 2))
 
         right.grid_columnconfigure(1, weight=1)
 

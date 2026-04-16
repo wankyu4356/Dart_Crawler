@@ -32,6 +32,24 @@ def _load_api_key_from_file() -> str:
                 pass
     return ""
 
+def _ensure_api_key_file() -> None:
+    """exe 폴더에 api_key.txt 가 없으면 안내 텍스트가 담긴 빈 파일 생성."""
+    import sys
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.getcwd()
+    p = os.path.join(base, "api_key.txt")
+    if not os.path.isfile(p):
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("# Anthropic API Key 를 아래 줄에 붙여넣으세요 (sk-ant-...)\n")
+                f.write("# 저장 후 프로그램을 다시 실행하면 자동으로 읽어옵니다.\n")
+        except Exception:
+            pass
+
+_ensure_api_key_file()
+
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "") or _load_api_key_from_file()
 # 기본 모델. Haiku 는 비용/속도 우선, Sonnet/Opus 는 품질 우선.
 ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
