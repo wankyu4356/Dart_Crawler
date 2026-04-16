@@ -654,6 +654,8 @@ _IS_CANONICAL = [
     # 영업외 (기타영업외 vs 기타)
     ("기타영업외수익", 60), ("기타영업외이익", 60),
     ("기타영업외비용", 62), ("기타영업외손실", 62),
+    ("기타영업수익", 60), ("기타영업이익", 60),
+    ("기타영업비용", 62), ("기타영업손실", 62),
     ("영업외수익", 65),
     ("영업외비용", 66),
     ("영업외손익", 67),
@@ -855,6 +857,101 @@ def _canonical_ord(sj: str, name: str) -> int:
         # 유동/비유동 라벨 없지만 투자/관계기업 — 통상 비유동자산
         if any(k in n for k in ("관계기업", "종속기업", "공동기업", "투자부동산")):
             return 28
+
+    # 2차 IS/CIS 휴리스틱: 키워드 기반 영역 분류
+    if sj in ("IS", "CIS"):
+        # 주당이익 관련 (맨 아래 직전)
+        if "주당" in n:
+            if "우선주" in n:
+                return 134
+            if "보통주" in n:
+                return 136
+            if "희석" in n:
+                return 132
+            if "기본" in n:
+                return 131
+            return 139
+        # 귀속 breakdown
+        if "귀속" in n or "지배기업" in n or "비지배지분" in n:
+            return 140
+        # 포괄손익 라인 (CIS 쪽)
+        if "포괄손익" in n:
+            return 110 if "기타" in n else 121
+        # 성격별 분류 (비용의 성격별)
+        if any(k in n for k in (
+            "재료비", "종업원급여", "노무비", "인건비",
+            "용역비", "광고선전비", "수수료비용", "세금과공과",
+        )):
+            return 200
+        # 법인세
+        if "법인세" in n:
+            if "차감전" in n:
+                return 85
+            return 90
+        # 지분법
+        if "지분법" in n:
+            return 80
+        # 금융
+        if any(k in n for k in ("금융수익", "이자수익", "배당금수익")):
+            return 70
+        if any(k in n for k in ("금융원가", "금융비용", "이자비용")):
+            return 75
+        # 영업외
+        if "영업외" in n:
+            if any(k in n for k in ("비용", "손실")):
+                return 66
+            if any(k in n for k in ("수익", "이익")):
+                return 65
+            return 67
+        # 영업 관련
+        if "영업이익" in n or "영업손실" in n or "영업손익" in n:
+            return 50
+        if "매출총이익" in n or "매출총손익" in n or "매출총손실" in n:
+            return 30
+        if "매출원가" in n or "용역원가" in n:
+            return 20
+        if "영업비용" in n:
+            return 45
+        # 매출 (revenue)
+        if any(k in n for k in ("매출액", "영업수익", "수익(매출액)")):
+            return 10
+        if "매출" in n:
+            return 13
+        # 기타 수익/비용 (영업외 아님)
+        if "기타비용" in n or "기타손실" in n:
+            return 69
+        if "기타수익" in n or "기타이익" in n:
+            return 68
+        # 당기순이익
+        if any(k in n for k in ("당기순이익", "당기순손실", "당기순손익",
+                                "분기순이익", "반기순이익")):
+            return 100
+        # 기타포괄손익 항목
+        if any(k in n for k in (
+            "재분류", "환산차이", "외환차이", "재측정",
+        )):
+            return 115
+
+    # 2차 CF 휴리스틱: 활동별 영역
+    if sj == "CF":
+        if "영업활동" in n:
+            return 10
+        if "투자활동" in n:
+            return 20
+        if "재무활동" in n:
+            return 30
+        if any(k in n for k in (
+            "현금의증가", "현금의감소", "현금및현금성자산의증가",
+            "현금및현금성자산의감소", "순증가", "순감소",
+        )):
+            return 40
+        if "기초" in n and "현금" in n:
+            return 50
+        if "기말" in n and "현금" in n:
+            return 60
+        # 외화환산
+        if "외화환산" in n or "환율변동" in n:
+            return 45
 
     return 5000  # 매치 없는 잡다한 라인은 아래로
 

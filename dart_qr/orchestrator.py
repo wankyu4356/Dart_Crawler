@@ -122,6 +122,43 @@ def _validate_financials(fin, log: LogFn) -> Dict[str, Any]:
     return {"report": report, "missing_by_key": missing_by_key}
 
 
+def _rederive_financials(fin, log: LogFn) -> bool:
+    """파생 재계산 — cost_of_sales/gross_profit/ebitda/마진 누락 건을
+    가용한 값 조합으로 재파생.
+
+    - gross_profit = revenue - cost_of_sales (둘 다 있으면)
+    - ebitda = op_income + da (둘 다 있으면)
+    - *pm (마진) = val/revenue*100
+
+    반환: 하나라도 새로 채워졌으면 True.
+    """
+    changed = False
+    for lst in (fin.annual, getattr(fin, "annual_cfs", []) or [],
+                getattr(fin, "annual_ofs", []) or []):
+        for yf in lst:
+            v = yf.values
+            rev = v.get("revenue")
+            if v.get("gross_profit") is None and rev is not None \
+                    and v.get("cost_of_sales") is not None:
+                v["gross_profit"] = rev - v["cost_of_sales"]
+                changed = True
+            if v.get("ebitda") is None and v.get("op_income") is not None \
+                    and v.get("da") is not None:
+                v["ebitda"] = v["op_income"] + v["da"]
+                changed = True
+            if rev:
+                for key, mkey in [
+                    ("gross_profit", "gpm"), ("op_income", "opm"),
+                    ("ebitda", "ebitdam"), ("net_income", "npm"),
+                ]:
+                    if v.get(key) is not None and v.get(mkey) is None:
+                        v[mkey] = v[key] / rev * 100.0
+                        changed = True
+    if changed:
+        log(f"    ↻ 파생 재계산 완료 (gross_profit/ebitda/마진 보강)")
+    return changed
+
+
 def _propagate_da_to_fs_lists(fin, year: int, dep, amort) -> None:
     """fin.annual 의 특정 year 에 D&A 를 주입한 직후, 같은 year 의
     annual_cfs / annual_ofs YearFin 에도 동일한 값을 복사.
@@ -641,41 +678,73 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
     log(f"  ✓ Excel:  {xlsx_path}")
     log(f"  ✓ HTML:  {html_path}")
 
-    # ─── 9) 출력 자체 검수 (self-audit) ───────────────────────────────
+    # ─── 9) 출력 자체 검수 + 자동 수정 루프 (최대 2회 재시도) ─────────
     log(f"\n[자체 검수] 출력 파일 무결성 점검")
-    issues = _audit_outputs(xlsx_path, html_path, fin, biz, exec_summary,
-                            footnotes, discs, log)
-    if issues:
-        log(f"  ⚠ {len(issues)}건 이슈 발견:")
+    for pass_no in (1, 2, 3):
+        issues = _audit_outputs(xlsx_path, html_path, fin, biz, exec_summary,
+                                footnotes, discs, log)
+        if not issues:
+            if pass_no == 1:
+                log(f"  ✓ 모든 검수 통과")
+            else:
+                log(f"  ✓ 재검수 {pass_no-1}회 후 통과")
+            break
+
+        log(f"  ⚠ Pass {pass_no}: {len(issues)}건 이슈 발견:")
         for issue in issues:
             log(f"    • [{issue['type']}] {issue['msg']}")
-        # 자동 수정 — 빈 섹션은 None 처리해 HTML 에서 아예 숨김
+
+        # ── 능동적 수정 시도 ────────────────────────────────────────
         fixed = 0
+        fin_changed = False
+
+        # (1) 빈 섹션 → None 처리해 HTML 에서 제거
         for issue in issues:
-            if issue["type"] == "exec_empty":
+            t = issue["type"]
+            if t == "exec_empty" and exec_summary is not None:
                 exec_summary = None
                 fixed += 1
-            elif issue["type"] == "biz_empty":
+            elif t == "biz_empty" and biz is not None:
                 biz = None
                 fixed += 1
-        if fixed:
-            log(f"  ↻ {fixed}건 자동 수정 — 파일 재저장")
-            write_excel(xlsx_path, profile, fin, sh, discs, period_label,
-                        exec_summary=exec_summary, business=biz, footnotes=footnotes)
-            write_html(html_path, profile, fin, sh, discs, period_label,
-                       exec_summary=exec_summary, business=biz, footnotes=footnotes)
-            # 재검수
-            issues2 = _audit_outputs(xlsx_path, html_path, fin, biz, exec_summary,
-                                     footnotes, discs, log)
-            remain = [i for i in issues2 if i["type"] not in ("exec_empty", "biz_empty")]
-            if remain:
-                log(f"  ⚠ 자동수정 불가 잔존 이슈 {len(remain)}건 (검토 필요)")
-            else:
-                log(f"  ✓ 재검수 통과")
-        else:
-            log(f"  ℹ 자동수정 가능 이슈 없음 (수동 검토 권장)")
+
+        # (2) 파생 재계산 — gross_profit/ebitda/margin 재파생
+        #     (IS 가 cost_of_sales 없이 영업비용 → 간접 파생 가능)
+        for issue in issues:
+            if issue["type"] in ("missing_gross_profit", "missing_cost_of_sales"):
+                if _rederive_financials(fin, log):
+                    fin_changed = True
+                    fixed += 1
+
+        # (3) subtotal_mismatch → 재무제표_상세 재작성 시도
+        #     (BS/IS canonical 분류 결과 개선으로 해결 가능성)
+        has_subtotal_mismatch = any(
+            i["type"] == "subtotal_mismatch" for i in issues
+        )
+        if has_subtotal_mismatch and pass_no == 1:
+            log(f"    ↻ subtotal_mismatch {sum(1 for i in issues if i['type']=='subtotal_mismatch')}건 "
+                f"— 재무제표_상세 재분류 시도")
+            # pivot 재분류는 excel_out._write_fin_detail 재실행 시 이미 이루어짐
+            # (_canonical_ord 휴리스틱이 다시 돌면서 sort 결과가 약간 달라질 수 있음)
+            fixed += 1
+
+        # (4) LLM 모두 실패 → 인코딩/키 이슈 안내 후 건너뜀 (더 이상 재시도 무의미)
+        for issue in issues:
+            if issue["type"] == "llm_all_failed" and pass_no == 1:
+                log(f"    ⚠ LLM 전체 실패 — raw HTTP 경로 사용 중이어도 실패. "
+                    f"API 키/네트워크/rate limit 확인 필요")
+
+        if fixed == 0:
+            log(f"  ℹ Pass {pass_no}: 자동수정 불가 — {len(issues)}건 잔존 (수동 검토)")
+            break
+
+        log(f"  ↻ Pass {pass_no}: {fixed}건 수정 — 파일 재저장")
+        write_excel(xlsx_path, profile, fin, sh, discs, period_label,
+                    exec_summary=exec_summary, business=biz, footnotes=footnotes)
+        write_html(html_path, profile, fin, sh, discs, period_label,
+                   exec_summary=exec_summary, business=biz, footnotes=footnotes)
     else:
-        log(f"  ✓ 모든 검수 통과")
+        log(f"  ⚠ 재검수 3회 후에도 이슈 잔존 — 수동 검토 필요")
 
     return RunResult(
         excel_path=xlsx_path, html_path=html_path,
