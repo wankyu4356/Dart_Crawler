@@ -131,6 +131,33 @@ def _apply_hyperlink(cell, url: str, display: str = None) -> None:
     cell.hyperlink = url
     cell.font = LINK_FONT
 
+# ── 마크다운 텍스트 → Excel 용 plain text 변환 ────────────────────────
+import re as _re
+
+_MD_STRIP_RULES = [
+    (_re.compile(r"```[\s\S]*?```"),                ""),      # code fence 블록 제거
+    (_re.compile(r"\*\*(.+?)\*\*"),                 r"\1"),   # **bold** → bold
+    (_re.compile(r"__(.+?)__"),                     r"\1"),   # __bold__ → bold
+    (_re.compile(r"\*(.+?)\*"),                     r"\1"),   # *italic* → italic
+    (_re.compile(r"`([^`]+)`"),                     r"\1"),   # `code` → code
+    (_re.compile(r"^#{1,6}\s+", _re.MULTILINE),    ""),      # # heading → heading
+    (_re.compile(r"^[-*_]{3,}\s*$", _re.MULTILINE),""),      # --- hr → 빈줄
+    (_re.compile(r"^\s*[-*]\s+", _re.MULTILINE),   "• "),    # - bullet → • bullet
+    (_re.compile(r"^\s*\d+\.\s+", _re.MULTILINE),  ""),      # 1. numbered → plain
+]
+
+
+def _strip_md(text) -> str:
+    """LLM 응답 텍스트에서 마크다운 서식을 제거해 Excel 가독성 확보."""
+    if not isinstance(text, str) or not text:
+        return text or ""
+    for pat, repl in _MD_STRIP_RULES:
+        text = pat.sub(repl, text)
+    # 연속 빈줄 압축
+    text = _re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 # 셀 표시 포맷 — 값은 raw 숫자(원 단위)로 저장하고 표시만 포맷
 KRW_FMT = '#,##0'           # 1,234,567,890
 # 12.3% (기본) / -12.3% (빨강) / -
@@ -738,12 +765,10 @@ def _write_indicators(wb: Workbook, fin: FinancialsBundle) -> None:
 def _write_table(wb: Workbook, sheet_name: str, rows: List[Dict[str, Any]],
                  header_map: Optional[Dict[str, str]] = None) -> None:
     """IB 스타일 표: 헤더 딥블루 + zebra + 얇은 보더 + freeze 상단."""
+    if not rows:
+        return  # 빈 데이터면 시트 자체 미생성
     ws = wb.create_sheet(sheet_name)
     ws.sheet_view.showGridLines = False
-    if not rows:
-        cell = ws.cell(row=1, column=1, value="(데이터 없음)")
-        cell.font = NOTE_FONT
-        return
     keys = list(rows[0].keys())
     headers = [header_map.get(k, k) if header_map else k for k in keys]
     ws.append(headers)
@@ -857,6 +882,8 @@ def _write_shareholders(wb: Workbook, sh: ShareholderBundle) -> None:
 
 
 def _write_disclosure_list(wb: Workbook, discs: List[Disclosure]) -> None:
+    if not discs:
+        return
     ws = wb.create_sheet("공시리스트")
     headers = ["접수일", "유형", "세부유형", "제출인", "제목", "요약",
                "Implication", "상태", "DART 링크"]
@@ -866,8 +893,8 @@ def _write_disclosure_list(wb: Workbook, discs: List[Disclosure]) -> None:
     for d in discs:
         ws.append([
             d.rcept_dt, d.ty_label, d.pblntf_detail_ty, d.flr_nm,
-            d.report_nm, d.summary,
-            d.implication, d.llm_status, "",
+            d.report_nm, _strip_md(d.summary),
+            _strip_md(d.implication), d.llm_status, "",
         ])
         r = ws.max_row
         # 제목 → 하이퍼링크
@@ -881,6 +908,9 @@ def _write_disclosure_list(wb: Workbook, discs: List[Disclosure]) -> None:
 
 
 def _write_important_details(wb: Workbook, discs: List[Disclosure]) -> None:
+    ok = [d for d in discs if d.llm_status == "ok"]
+    if not ok:
+        return
     ws = wb.create_sheet("주요공시상세")
     ws.append(["접수일", "제목", "유형", "요약", "핵심 포인트", "Implication", "링크"])
     _style_header(ws, 1, 7)
@@ -889,9 +919,9 @@ def _write_important_details(wb: Workbook, discs: List[Disclosure]) -> None:
             continue
         ws.append([
             d.rcept_dt, "", d.ty_label,
-            d.summary,
-            "\n".join(f"• {kp}" for kp in d.key_points),
-            d.implication,
+            _strip_md(d.summary),
+            "\n".join(f"• {_strip_md(kp)}" for kp in d.key_points),
+            _strip_md(d.implication),
             "",
         ])
         r = ws.max_row
@@ -926,7 +956,7 @@ def _write_business(wb: Workbook, biz: Optional[dict]) -> None:
     if summary:
         ws.cell(row=r, column=1, value="요약").font = Font(bold=True, color="305496")
         r += 1
-        c = ws.cell(row=r, column=1, value=summary)
+        c = ws.cell(row=r, column=1, value=_strip_md(summary))
         c.alignment = WRAP
         ws.row_dimensions[r].height = max(40, min(200, 18 * (len(summary) // 50 + 1)))
         r += 2
@@ -951,6 +981,8 @@ def _write_business(wb: Workbook, biz: Optional[dict]) -> None:
             cell.fill = HEADER_FILL
         r += 1
         for s in segments[:30]:
+            if not isinstance(s, dict):
+                continue
             ws.cell(row=r, column=1, value=s.get("name", ""))
             rev = s.get("revenue")
             ws.cell(row=r, column=2, value=rev if isinstance(rev, (int, float)) else None)
@@ -983,7 +1015,7 @@ def _write_business(wb: Workbook, biz: Optional[dict]) -> None:
         ws.cell(row=r, column=1, value="투자 포인트").font = Font(bold=True, color="305496")
         r += 1
         for x in insights:
-            cell = ws.cell(row=r, column=1, value=f"▶ {x}")
+            cell = ws.cell(row=r, column=1, value=f"▶ {_strip_md(x) if isinstance(x, str) else x}")
             cell.alignment = WRAP
             cell.fill = PatternFill("solid", fgColor="FFF8EF")
             r += 1
@@ -1058,6 +1090,8 @@ def _write_footnotes(wb: Workbook, footnotes: Optional[dict]) -> None:
         for i, it in enumerate(items):
             for ci, (k, _, fmt) in enumerate(columns, start=1):
                 v = it.get(k) if isinstance(it, dict) else None
+                if isinstance(v, str):
+                    v = _strip_md(v)
                 cell = ws.cell(row=r, column=ci, value=v)
                 cell.font = BODY_FONT
                 cell.border = THIN_BORDER
@@ -1140,7 +1174,7 @@ def write_excel(
         es = wb.create_sheet("Executive Summary", 1)
         es["A1"] = "Executive Summary"
         es["A1"].font = Font(bold=True, size=14)
-        es["A3"] = exec_summary
+        es["A3"] = _strip_md(exec_summary)
         es["A3"].alignment = WRAP
         es.column_dimensions["A"].width = 100
 

@@ -53,36 +53,61 @@ def _md_to_html(text: str) -> str:
     lines = text.splitlines()
     out: List[str] = []
     in_ul = False
+    in_ol = False
+
+    def _close_lists():
+        nonlocal in_ul, in_ol
+        if in_ul:
+            out.append("</ul>")
+            in_ul = False
+        if in_ol:
+            out.append("</ol>")
+            in_ol = False
+
     for raw in lines:
         ln = raw.rstrip()
         if not ln.strip():
-            if in_ul:
-                out.append("</ul>")
-                in_ul = False
+            _close_lists()
             continue
+        # 수평선 (---, ***, ___)
+        if re.match(r"^\s*[-*_]{3,}\s*$", ln):
+            _close_lists()
+            out.append("<hr>")
+            continue
+        # heading
         m_h = None
         for k in (4, 3, 2, 1):
             if ln.startswith("#" * k + " "):
                 m_h = k
                 break
         if m_h:
-            if in_ul:
-                out.append("</ul>")
-                in_ul = False
+            _close_lists()
             out.append(f"<h{m_h+2}>{_inline(ln[m_h+1:].strip())}</h{m_h+2}>")
             continue
+        # bullet list
         if ln.lstrip().startswith(("- ", "* ")):
+            if in_ol:
+                out.append("</ol>")
+                in_ol = False
             if not in_ul:
                 out.append("<ul>")
                 in_ul = True
             out.append(f"<li>{_inline(ln.lstrip()[2:].strip())}</li>")
             continue
-        if in_ul:
-            out.append("</ul>")
-            in_ul = False
+        # numbered list (1. / 2. / ...)
+        m_ol = re.match(r"^\s*\d+\.\s+(.+)", ln)
+        if m_ol:
+            if in_ul:
+                out.append("</ul>")
+                in_ul = False
+            if not in_ol:
+                out.append("<ol>")
+                in_ol = True
+            out.append(f"<li>{_inline(m_ol.group(1).strip())}</li>")
+            continue
+        _close_lists()
         out.append(f"<p>{_inline(ln.strip())}</p>")
-    if in_ul:
-        out.append("</ul>")
+    _close_lists()
     return "\n".join(out)
 
 
@@ -643,6 +668,8 @@ def _business_section(cnt: SectionCounter, biz: Optional[dict]) -> str:
 
         rows = []
         for s in segments[:20]:
+            if not isinstance(s, dict):
+                continue
             name = _esc(s.get("name", "-"))
             rev = _fmt_rev(s.get("revenue"), s.get("revenue_note"))
             opm = s.get("op_margin_pct")

@@ -49,7 +49,7 @@ def _build_user_prompt(corp_name: str, title: str, date: str, ty_label: str, bod
 
 
 # ── JSON 파싱 ────────────────────────────────────────────────────────────
-_CODEBLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_CODEBLOCK_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*\})\s*```")
 _OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 
 
@@ -288,7 +288,7 @@ AUDIT_GOV_SYSTEM = """당신은 한국 회계 전문가입니다. 비상장 법�
 def _parse_json_array(text: str):
     if not text:
         return None
-    m = re.search(r"```(?:json)?\s*(\[[\s\S]*?\])\s*```", text)
+    m = re.search(r"```(?:json)?\s*(\[[\s\S]*\])\s*```", text)
     candidate = m.group(1) if m else None
     if candidate is None:
         m2 = re.search(r"\[[\s\S]*\]", text)
