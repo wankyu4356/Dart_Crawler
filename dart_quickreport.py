@@ -10,7 +10,33 @@ GUI 기본. `--cli` 플래그로 CLI 사용. 빌드된 .exe 는 시작 시 GitHu
 """
 from __future__ import annotations
 import argparse
+import io
+import os
 import sys
+
+# ── 인코딩 안전망 ──────────────────────────────────────────────────────
+# PyInstaller --windowed (콘솔 없음) 에서 sys.stdout/stderr 인코딩이
+# ASCII 로 fallback → Anthropic SDK 내부에서 한글 처리 시
+# UnicodeEncodeError 발생. UTF-8 로 강제 설정.
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+if hasattr(sys.stdout, "encoding") and (sys.stdout.encoding or "").lower() not in (
+    "utf-8", "utf8"
+):
+    try:
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True
+        )
+    except Exception:
+        pass
+if hasattr(sys.stderr, "encoding") and (sys.stderr.encoding or "").lower() not in (
+    "utf-8", "utf8"
+):
+    try:
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True
+        )
+    except Exception:
+        pass
 
 # .env 자동 로드 (있을 때만)
 try:
@@ -22,11 +48,16 @@ except Exception:
 
 def _run_cli(args: argparse.Namespace) -> int:
     from dart_qr.orchestrator import RunConfig, run_quickreport
+    no = args.no_llm
     cfg = RunConfig(
         company=args.company,
         period_value=args.period,
         period_unit=args.unit,
-        analyze_bodies=not args.no_llm,
+        summarize_disclosures=not no,
+        exec_summary=not no,
+        business_profile=not no,
+        footnotes=not no,
+        da_llm_fallback=not no,
         body_limit=args.limit,
         years_back=args.years,
         output_dir=args.outdir,
