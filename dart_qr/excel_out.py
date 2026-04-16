@@ -148,14 +148,60 @@ _MD_STRIP_RULES = [
 
 
 def _strip_md(text) -> str:
-    """LLM 응답 텍스트에서 마크다운 서식을 제거해 Excel 가독성 확보."""
+    """LLM 응답 텍스트에서 마크다운 서식 + raw JSON 잔류물을 제거해 Excel 가독성 확보."""
     if not isinstance(text, str) or not text:
         return text or ""
     for pat, repl in _MD_STRIP_RULES:
         text = pat.sub(repl, text)
+    # raw JSON 잔류물 제거 (파싱 실패 시 disc.summary 에 남는 패턴)
+    # { "key": "value", ... } 형태가 셀 전체를 채우면 내부 value 만 추출 시도
+    stripped = text.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            import json
+            obj = json.loads(stripped)
+            if isinstance(obj, dict):
+                # summary / key_points / implication 키가 있으면 조합
+                parts = []
+                for k in ("summary", "key_points", "implication"):
+                    v = obj.get(k)
+                    if isinstance(v, str) and v.strip():
+                        parts.append(v.strip())
+                    elif isinstance(v, list):
+                        parts.append("\n".join(f"• {x}" for x in v if isinstance(x, str)))
+                if parts:
+                    text = "\n\n".join(parts)
+        except (json.JSONDecodeError, Exception):
+            pass
     # 연속 빈줄 압축
     text = _re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _fmt_counterparty(item) -> str:
+    """customer/supplier 가 dict 면 name+share+amount 문자열로, str 이면 그대로."""
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return str(item)
+    name = item.get("name") or ""
+    parts = [name]
+    sp = item.get("share_pct")
+    if isinstance(sp, (int, float)):
+        parts.append(f"({sp:.1f}%)")
+    amt = item.get("amount")
+    if isinstance(amt, (int, float)):
+        a = abs(amt)
+        if a >= 1e12:
+            parts.append(f"{amt/1e12:,.2f}조")
+        elif a >= 1e8:
+            parts.append(f"{amt/1e8:,.0f}억")
+        else:
+            parts.append(f"{amt:,.0f}원")
+    note = item.get("amount_note") or item.get("description") or ""
+    if note:
+        parts.append(f"— {note}")
+    return " ".join(p for p in parts if p)
 
 
 # 셀 표시 포맷 — 값은 raw 숫자(원 단위)로 저장하고 표시만 포맷
@@ -937,94 +983,132 @@ def _write_business(wb: Workbook, biz: Optional[dict]) -> None:
     if not biz:
         return
     ws = wb.create_sheet("사업개요", 1)
-    ws["A1"] = "회사 개요 (Business Profile)"
-    ws["A1"].font = Font(bold=True, size=14)
+    ws.sheet_view.showGridLines = False
+    # 좌측 여백 컬럼 (IB 스타일)
+    ws.column_dimensions["A"].width = 3
+
+    # 타이틀 배너
+    ws.cell(row=1, column=2, value="회사 개요 (Business Profile)")
+    ws.cell(row=1, column=2).font = Font(bold=True, size=14, color=_THEME_HEX, name="Calibri")
+    ws.row_dimensions[1].height = 30
     src = biz.get("_source_report_nm") or ""
     src_rcept = biz.get("_source_rcept_no") or ""
     if src:
-        ws["A2"] = "기준 보고서:"
-        ws["A2"].font = Font(italic=True, color="607D8B")
+        ws.cell(row=2, column=2, value="기준 보고서:")
+        ws.cell(row=2, column=2).font = NOTE_FONT
         if src_rcept:
             url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={src_rcept}"
-            _apply_hyperlink(ws.cell(row=2, column=2), url, src)
+            _apply_hyperlink(ws.cell(row=2, column=3), url, src)
         else:
-            ws["B2"] = src
-            ws["B2"].font = Font(italic=True, color="607D8B")
+            ws.cell(row=2, column=3, value=src).font = NOTE_FONT
 
+    # c=2 기준 (좌측 여백 확보)
+    C = 2  # 시작 컬럼
     r = 4
     summary = (biz.get("business_summary") or "").strip()
     if summary:
-        ws.cell(row=r, column=1, value="요약").font = Font(bold=True, color="305496")
+        h = ws.cell(row=r, column=C, value="요약")
+        h.font = Font(bold=True, color="305496")
+        h.fill = SECTION_FILL
+        for ci in range(C, C + 4):
+            ws.cell(row=r, column=ci).fill = SECTION_FILL
         r += 1
-        c = ws.cell(row=r, column=1, value=_strip_md(summary))
+        c = ws.cell(row=r, column=C, value=_strip_md(summary))
         c.alignment = WRAP
+        c.font = BODY_FONT
+        ws.merge_cells(start_row=r, start_column=C, end_row=r, end_column=C + 3)
         ws.row_dimensions[r].height = max(40, min(200, 18 * (len(summary) // 50 + 1)))
         r += 2
 
     products = biz.get("products") or []
     if products:
-        ws.cell(row=r, column=1, value="주요 제품/서비스").font = Font(bold=True, color="305496")
+        h = ws.cell(row=r, column=C, value="주요 제품/서비스")
+        h.font = Font(bold=True, color="305496")
+        h.fill = SECTION_FILL
+        for ci in range(C, C + 4):
+            ws.cell(row=r, column=ci).fill = SECTION_FILL
         r += 1
         for p in products[:30]:
-            ws.cell(row=r, column=1, value=f"• {p}")
+            ws.cell(row=r, column=C, value=f"• {p}").font = BODY_FONT
             r += 1
         r += 1
 
     segments = biz.get("segments") or []
     if segments:
-        ws.cell(row=r, column=1, value="사업부별 매출·영업이익률").font = Font(bold=True, color="305496")
+        h = ws.cell(row=r, column=C, value="사업부별 매출·영업이익률")
+        h.font = Font(bold=True, color="305496")
+        h.fill = SECTION_FILL
+        for ci in range(C, C + 4):
+            ws.cell(row=r, column=ci).fill = SECTION_FILL
         r += 1
-        headers = ["사업부/제품군", "매출", "매출 단위/연도", "영업이익률(%)", "설명"]
-        for i, h in enumerate(headers, start=1):
-            cell = ws.cell(row=r, column=i, value=h)
+        seg_headers = ["사업부/제품군", "매출", "매출 단위/연도", "영업이익률(%)", "설명"]
+        for i, sh in enumerate(seg_headers):
+            cell = ws.cell(row=r, column=C + i, value=sh)
             cell.font = HEADER_FONT
-            cell.fill = HEADER_FILL
+            cell.fill = PatternFill("solid", fgColor=_THEME_HEX)
+            cell.alignment = HEADER_ALIGN
+            cell.border = HEADER_BORDER
         r += 1
         for s in segments[:30]:
             if not isinstance(s, dict):
                 continue
-            ws.cell(row=r, column=1, value=s.get("name", ""))
+            ws.cell(row=r, column=C, value=s.get("name", "")).font = BODY_FONT
             rev = s.get("revenue")
-            ws.cell(row=r, column=2, value=rev if isinstance(rev, (int, float)) else None)
-            ws.cell(row=r, column=2).number_format = KRW_FMT
-            ws.cell(row=r, column=3, value=s.get("revenue_note", ""))
+            ws.cell(row=r, column=C + 1, value=rev if isinstance(rev, (int, float)) else None)
+            ws.cell(row=r, column=C + 1).number_format = KRW_FMT
+            ws.cell(row=r, column=C + 2, value=s.get("revenue_note", "")).font = BODY_FONT
             opm = s.get("op_margin_pct")
-            ws.cell(row=r, column=4, value=opm if isinstance(opm, (int, float)) else None)
-            ws.cell(row=r, column=4).number_format = PCT_FMT
-            ws.cell(row=r, column=5, value=s.get("description", "")).alignment = WRAP
+            ws.cell(row=r, column=C + 3, value=opm if isinstance(opm, (int, float)) else None)
+            ws.cell(row=r, column=C + 3).number_format = PCT_FMT
+            ws.cell(row=r, column=C + 4, value=_strip_md(s.get("description", ""))).alignment = WRAP
+            for ci in range(C, C + 5):
+                ws.cell(row=r, column=ci).border = THIN_BORDER
             r += 1
         r += 1
 
     customers = biz.get("major_customers") or []
     suppliers = biz.get("major_suppliers") or []
     if customers or suppliers:
-        ws.cell(row=r, column=1, value="주요 매출처").font = Font(bold=True, color="305496")
-        ws.cell(row=r, column=3, value="주요 매입처").font = Font(bold=True, color="305496")
+        h = ws.cell(row=r, column=C, value="주요 매출처")
+        h.font = Font(bold=True, color="305496")
+        h.fill = SECTION_FILL
+        ws.cell(row=r, column=C + 2, value="주요 매입처").font = Font(bold=True, color="305496")
+        ws.cell(row=r, column=C + 2).fill = SECTION_FILL
+        for ci in range(C, C + 4):
+            ws.cell(row=r, column=ci).fill = SECTION_FILL
         r += 1
         max_n = max(len(customers), len(suppliers))
         for i in range(min(20, max_n)):
             if i < len(customers):
-                ws.cell(row=r, column=1, value=f"• {customers[i]}")
+                ws.cell(row=r, column=C, value=f"• {_fmt_counterparty(customers[i])}").font = BODY_FONT
             if i < len(suppliers):
-                ws.cell(row=r, column=3, value=f"• {suppliers[i]}")
+                ws.cell(row=r, column=C + 2, value=f"• {_fmt_counterparty(suppliers[i])}").font = BODY_FONT
             r += 1
         r += 1
 
     insights = biz.get("key_insights") or []
     if insights:
-        ws.cell(row=r, column=1, value="투자 포인트").font = Font(bold=True, color="305496")
+        h = ws.cell(row=r, column=C, value="투자 포인트")
+        h.font = Font(bold=True, color="305496")
+        h.fill = SECTION_FILL
+        for ci in range(C, C + 4):
+            ws.cell(row=r, column=ci).fill = SECTION_FILL
         r += 1
         for x in insights:
-            cell = ws.cell(row=r, column=1, value=f"▶ {_strip_md(x) if isinstance(x, str) else x}")
+            cell = ws.cell(row=r, column=C, value=f"▶ {_strip_md(x) if isinstance(x, str) else x}")
             cell.alignment = WRAP
+            cell.font = BODY_FONT
             cell.fill = PatternFill("solid", fgColor="FFF8EF")
+            ws.merge_cells(start_row=r, start_column=C, end_row=r, end_column=C + 3)
             r += 1
 
-    # 열 너비
-    ws.column_dimensions["A"].width = 40
-    ws.column_dimensions["B"].width = 22
-    ws.column_dimensions["C"].width = 28
-    ws.column_dimensions["D"].width = 16
+    # 열 너비 (A=여백, B~F=콘텐츠)
+    ws.column_dimensions["A"].width = 3
+    ws.column_dimensions["B"].width = 40
+    ws.column_dimensions["C"].width = 22
+    ws.column_dimensions["D"].width = 28
+    ws.column_dimensions["E"].width = 16
+    ws.column_dimensions["F"].width = 36
     ws.column_dimensions["E"].width = 50
 
 
@@ -1172,11 +1256,15 @@ def write_excel(
 
     if exec_summary:
         es = wb.create_sheet("Executive Summary", 1)
-        es["A1"] = "Executive Summary"
-        es["A1"].font = Font(bold=True, size=14)
-        es["A3"] = _strip_md(exec_summary)
-        es["A3"].alignment = WRAP
-        es.column_dimensions["A"].width = 100
+        es.sheet_view.showGridLines = False
+        es.column_dimensions["A"].width = 3  # 좌측 여백
+        es.cell(row=1, column=2, value="Executive Summary").font = Font(
+            bold=True, size=14, color=_THEME_HEX, name="Calibri")
+        es.row_dimensions[1].height = 30
+        es.cell(row=3, column=2, value=_strip_md(exec_summary))
+        es.cell(row=3, column=2).alignment = WRAP
+        es.cell(row=3, column=2).font = BODY_FONT
+        es.column_dimensions["B"].width = 100
 
     _write_business(wb, business)
     _write_footnotes(wb, footnotes)
