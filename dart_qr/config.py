@@ -22,7 +22,13 @@ DART_BASE_URL: str = "https://opendart.fss.or.kr/api"
 # ── Anthropic ────────────────────────────────────────────────────────────
 # API Key 우선순위: 1) 환경변수 → 2) exe 옆 api_key.txt 파일 → 3) 빈 문자열
 def _load_api_key_from_file() -> str:
-    """exe 또는 스크립트와 같은 폴더에 api_key.txt 가 있으면 첫 줄 반환."""
+    """exe 또는 스크립트와 같은 폴더에 api_key.txt 가 있으면 읽어서 유효 키 반환.
+
+    - 주석 라인 (# 으로 시작) 건너뛰기
+    - 빈 줄 건너뛰기
+    - Anthropic 키 형식 (`sk-ant-` prefix + ASCII) 만 채택
+    - 조건 맞는 첫 줄을 찾지 못하면 빈 문자열 반환 (잘못된 값 반환 금지)
+    """
     import sys
     if getattr(sys, "frozen", False):
         base = os.path.dirname(os.path.abspath(sys.executable))
@@ -30,18 +36,35 @@ def _load_api_key_from_file() -> str:
         base = os.getcwd()
     for name in ("api_key.txt", "anthropic_api_key.txt"):
         p = os.path.join(base, name)
-        if os.path.isfile(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    key = f.readline().strip()
-                if key:
-                    return key
-            except Exception:
-                pass
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for raw_line in f:
+                    # BOM 제거 + 양끝 공백 제거
+                    line = raw_line.lstrip("\ufeff").strip()
+                    if not line:
+                        continue
+                    if line.startswith("#"):
+                        continue
+                    # ASCII 여야 하고 sk-ant- prefix 있어야 함
+                    if not line.startswith("sk-ant-"):
+                        continue
+                    if not line.isascii():
+                        continue
+                    return line
+        except Exception:
+            continue
     return ""
 
+
 def _ensure_api_key_file() -> None:
-    """exe 폴더에 api_key.txt 가 없으면 안내 텍스트가 담긴 빈 파일 생성."""
+    """exe 폴더에 api_key.txt 가 없으면 안내 텍스트가 담긴 빈 파일 생성.
+
+    안내 텍스트는 모두 `#` 주석 라인 — `_load_api_key_from_file()` 이
+    자동 skip 하므로 안전 (이전엔 첫 주석 라인이 키로 오인되어 HTTP 헤더
+    `x-api-key` 값이 한글 포함 → latin-1 인코딩 크래시의 원인이었음).
+    """
     import sys
     if getattr(sys, "frozen", False):
         base = os.path.dirname(os.path.abspath(sys.executable))
@@ -56,9 +79,28 @@ def _ensure_api_key_file() -> None:
         except Exception:
             pass
 
+
 _ensure_api_key_file()
 
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "") or _load_api_key_from_file()
+
+def _validate_anthropic_key(key: str) -> bool:
+    """sk-ant- prefix + ASCII 확인. 유효하면 True."""
+    if not key:
+        return False
+    if not key.startswith("sk-ant-"):
+        return False
+    if not key.isascii():
+        return False
+    if len(key) < 20:
+        return False
+    return True
+
+
+_env_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+# 환경변수도 한글/잘못된 값일 수 있으므로 검증
+if not _validate_anthropic_key(_env_key):
+    _env_key = ""
+ANTHROPIC_API_KEY: str = _env_key or _load_api_key_from_file()
 # 기본 모델. Haiku 는 비용/속도 우선, Sonnet/Opus 는 품질 우선.
 ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 

@@ -452,6 +452,16 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
         except Exception:
             pass
         log(f"[DART] API key = {'E&F PE' if cfg.use_enf_pe_key else 'default'}")
+        # Anthropic API Key 마스킹 로그 — 잘못된 키(한글 등) 즉시 식별
+        _ak = (cfg.anthropic_api_key
+               or __import__("dart_qr.config", fromlist=["ANTHROPIC_API_KEY"]).ANTHROPIC_API_KEY
+               or "")
+        if _ak:
+            masked = (_ak[:10] + "..." + _ak[-4:]) if len(_ak) > 20 else "(too short)"
+            valid = _ak.startswith("sk-ant-") and _ak.isascii()
+            log(f"[Anthropic] key={masked} len={len(_ak)} valid={valid}")
+        else:
+            log(f"[Anthropic] key=(미설정) — LLM 기능 모두 skip")
         log(f"[설정] company={cfg.company} period={cfg.period_value}{cfg.period_unit} "
             f"years_back={cfg.years_back} body_limit={cfg.body_limit} "
             f"model={cfg.anthropic_model or 'default'}")
