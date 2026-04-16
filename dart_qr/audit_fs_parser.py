@@ -262,15 +262,21 @@ def _parse_html_tables(
             raw_tables.append(block_rows)
             extractor.pre_texts.append(pre)
 
+    # 디버그 카운터 — 왜 필터에서 떨어지는지 확인용
+    _dbg = {"too_small": 0, "too_few_amounts": 0,
+            "unknown_no_kw": 0, "accepted": 0}
+
     results: List[RawFsTable] = []
     for i, tbl in enumerate(raw_tables):
         if not tbl or len(tbl) < 2:
+            _dbg["too_small"] += 1
             continue
         # 금액 셀이 충분해야 재무제표 후보
         num_cells = sum(
             1 for row in tbl for cell in row if _to_amount(cell) is not None
         )
-        if num_cells < 3:
+        if num_cells < 2:   # 완화: 3 → 2 (소규모 표도 수용)
+            _dbg["too_few_amounts"] += 1
             continue
 
         pre = extractor.pre_texts[i] if i < len(extractor.pre_texts) else ""
@@ -279,18 +285,38 @@ def _parse_html_tables(
         )[:600]
         code, label = _classify_table(pre, first_blob)
         if code == "UNKNOWN":
-            # 표 내용에 자산총계/매출액/영업이익/감가상각비 등이 있으면 재무제표로 간주
+            # 표 내용 키워드로 재무제표 재판정 (목록 대폭 확장)
             body_blob = " ".join(cell for row in tbl for cell in row)[:2000]
-            body_blob_norm = body_blob.replace(" ", "")
-            if "자산총계" in body_blob_norm or "부채총계" in body_blob_norm:
+            n = body_blob.replace(" ", "")
+            bs_kw = (
+                "자산총계", "부채총계", "자본총계",
+                "유동자산", "비유동자산", "유동부채", "비유동부채",
+                "자본금", "자본잉여금", "이익잉여금",
+            )
+            is_kw = (
+                "매출액", "매출총이익", "영업이익", "영업손실",
+                "영업수익", "당기순이익", "당기순손실",
+                "판매비와관리비", "법인세비용",
+            )
+            cf_kw = (
+                "영업활동현금흐름", "투자활동현금흐름", "재무활동현금흐름",
+                "영업활동으로인한현금흐름", "투자활동으로인한현금흐름",
+                "재무활동으로인한현금흐름", "현금및현금성자산의증가",
+                "기초의현금", "기말의현금",
+            )
+            cis_kw = ("총포괄손익", "기타포괄손익")
+            if any(k in n for k in bs_kw):
                 code, label = "BS", "재무상태표"
-            elif "매출액" in body_blob_norm or "영업이익" in body_blob_norm or \
-                 "영업수익" in body_blob_norm or "당기순이익" in body_blob_norm:
+            elif any(k in n for k in is_kw):
                 code, label = "IS", "손익계산서"
-            elif "영업활동현금흐름" in body_blob_norm or "영업활동으로인한현금흐름" in body_blob_norm:
+            elif any(k in n for k in cis_kw):
+                code, label = "CIS", "포괄손익계산서"
+            elif any(k in n for k in cf_kw):
                 code, label = "CF", "현금흐름표"
             else:
+                _dbg["unknown_no_kw"] += 1
                 continue
+        _dbg["accepted"] += 1
 
         # 헤더 행 선택: 연도가 가장 많이 등장하는 행 (상위 4행 중)
         header_idx = 0

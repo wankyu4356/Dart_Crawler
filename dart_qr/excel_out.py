@@ -857,6 +857,21 @@ def _canonical_ord(sj: str, name: str) -> int:
         # 유동/비유동 라벨 없지만 투자/관계기업 — 통상 비유동자산
         if any(k in n for k in ("관계기업", "종속기업", "공동기업", "투자부동산")):
             return 28
+        # 금융사(은행·핀테크) 특수 부채 — 예수부채/차입부채/수신 등
+        # 라벨 없는 경우 기본 유동부채 영역에 배치
+        if any(k in n for k in (
+            "예수부채", "예수금", "수신", "콜머니", "매도유가증권",
+            "보험계약부채", "퇴직급여부채",
+        )):
+            return 63  # 유동부채 윗쪽
+        if any(k in n for k in (
+            "대출채권", "예치금", "콜론", "매입유가증권",
+            "보험계약자산",
+        )):
+            return 29  # 비유동자산 끝
+        # 최종 fallback — 유동/비유동 라벨 없어도 is_liab/is_asset 이면 할당
+        if is_liab:   return 63   # 부채 (위치 미상 — 유동부채 윗쪽)
+        if is_asset:  return 29   # 자산 (위치 미상 — 비유동자산 끝)
 
     # 2차 IS/CIS 휴리스틱: 키워드 기반 영역 분류
     if sj in ("IS", "CIS"):

@@ -463,22 +463,27 @@ class _FakeResponse:
 
 
 def _raw_http_call(kwargs: Dict[str, Any], api_key: str, max_retries: int = 3):
-    """Anthropic REST API 직접 호출 (SDK 완전 우회).
+    """Anthropic REST API 직접 호출 — **stdlib http.client** 로 최저수준 호출.
 
-    한글 Windows + PyInstaller 에서 SDK 내부 httpx 의 HTTP 헤더 인코딩
-    크래시(ascii/latin-1 both)를 원천 차단. SDK 는 telemetry 헤더에
-    `platform.platform()` 같은 시스템 정보를 자동 삽입하는데 한글 localize
-    된 값이 들어가면 latin-1 인코딩 실패.
+    requests/urllib3 를 쓰지 않음. 이유:
+    - 한글 Windows + PyInstaller 에서 urllib3 가 HTTP 헤더를 latin-1 로
+      인코딩하는 과정에서 socket.gethostname() 등 시스템 값 한글 localize
+      가 섞여들어가 `\ub97c` (를) 인코딩 실패.
+    - http.client 는 우리가 set 한 헤더 바이트만 그대로 보냄. 자동 주입 없음.
 
-    간단한 retry: 429/5xx/네트워크 오류 시 2^n 초 대기 (2s, 4s, 8s).
+    429/5xx: 지수 백오프 (2s, 4s, 8s) 최대 3회 재시도.
     """
-    import requests
+    import http.client as _hc
+    import ssl as _ssl
     import time as _time
+    import socket as _socket
+
     headers = {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json; charset=utf-8",
-        "user-agent": "DART-QuickReport/0.x",  # ASCII 고정 — 한글 localize 차단
+        "accept": "application/json",
+        # User-Agent 생략 — http.client 는 자동 추가하지 않아 완전 ASCII 보장
     }
     payload = {
         "model": kwargs["model"],
@@ -491,36 +496,45 @@ def _raw_http_call(kwargs: Dict[str, Any], api_key: str, max_retries: int = 3):
     payload["messages"] = msgs
 
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    ctx = _ssl.create_default_context()
+
     last_exc = None
     for attempt in range(max_retries):
+        conn = None
         try:
-            resp = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                data=body,
-                timeout=120,
+            conn = _hc.HTTPSConnection(
+                "api.anthropic.com", timeout=120, context=ctx,
             )
-            if resp.status_code == 200:
-                data = resp.json()
+            conn.request("POST", "/v1/messages", body=body, headers=headers)
+            resp = conn.getresponse()
+            status = resp.status
+            raw = resp.read().decode("utf-8", errors="replace")
+            if status == 200:
+                data = json.loads(raw)
                 blocks = data.get("content") or []
                 text = "\n".join(
                     b.get("text", "") for b in blocks if isinstance(b, dict)
                 )
                 return _FakeResponse(text)
             # 429/5xx 재시도
-            if resp.status_code in (429,) or 500 <= resp.status_code < 600:
-                last_exc = RuntimeError(
-                    f"HTTP {resp.status_code}: {resp.text[:300]}")
+            if status == 429 or 500 <= status < 600:
+                last_exc = RuntimeError(f"HTTP {status}: {raw[:300]}")
                 if attempt < max_retries - 1:
                     _time.sleep(2 ** (attempt + 1))
                     continue
             # 4xx 는 재시도 불가
-            resp.raise_for_status()
-        except requests.RequestException as exc:
+            raise RuntimeError(f"HTTP {status}: {raw[:500]}")
+        except (_hc.HTTPException, _socket.error, _ssl.SSLError, OSError) as exc:
             last_exc = exc
             if attempt < max_retries - 1:
                 _time.sleep(2 ** (attempt + 1))
                 continue
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
     if last_exc:
         raise last_exc
     raise RuntimeError("raw HTTP call exhausted retries without specific error")

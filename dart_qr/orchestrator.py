@@ -437,6 +437,12 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     if _log_fh:
         log(f"[로그파일] {_log_path}")
         log(f"[환경] Python {sys.version.split()[0]} · {platform.platform()}")
+        try:
+            from . import _version as _v
+            log(f"[BUILD] v{_v.__version__} commit={getattr(_v, '__commit__', 'local')} "
+                f"built={getattr(_v, '__built_at__', 'local')}")
+        except Exception:
+            pass
         log(f"[인코딩] stdout={getattr(sys.stdout, 'encoding', '?')} "
             f"stderr={getattr(sys.stderr, 'encoding', '?')} "
             f"fs={sys.getfilesystemencoding()}")
