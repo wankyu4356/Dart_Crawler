@@ -32,6 +32,13 @@ ENV/
 .env.local
 .env.*.local
 
+# API keys (앱 실행 시 자동 생성되며, 사용자가 직접 붙여넣는 파일)
+api_key.txt
+anthropic_api_key.txt
+
+# 실행 시 생성되는 디버그 로그 파일
+_log_*.txt
+
 # IDE
 .vscode/
 .idea/
