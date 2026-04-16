@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""M10-B — Tkinter GUI (리디자인).
+"""M10-C — Tkinter GUI (UX 리디자인).
 
-디자인 원칙:
-  • ttk "clam" 테마 강제 (크로스 플랫폼 일관성)
-  • HERO 배너 (남색 그라데이션 느낌) + 입력 카드 + Primary 버튼 + 다크 로그
-  • 상태바에 이메일 문의 메모 상시 노출
+핵심 원칙:
+  • **회사명 → 버튼** 이 1초 안에 눈에 들어올 것.
+  • 설정은 접이식 (기본 닫힘) — 파워유저만 열어봄.
+  • 로그 위에 스텝 인디케이터 (현재 진행 단계 한눈에).
+  • ttk "clam" 테마 강제 (크로스 플랫폼 일관성).
 """
 from __future__ import annotations
 import os
+import re
 import sys
 import threading
 import traceback
@@ -24,14 +26,11 @@ from .orchestrator import RunConfig, run_quickreport
 PRIMARY   = "#10174a"
 PRIMARY_2 = "#1a237e"
 PRIMARY_3 = "#3949ab"
-PRIMARY_4 = "#5c6bc0"
 ACCENT    = "#ff6b35"
-ACCENT_2  = "#e65a2a"
-GOLD      = "#ffd180"
 INK       = "#0f172a"
 INK_2     = "#334155"
 INK_3     = "#475569"
-BG        = "#eef0f5"
+BG        = "#f1f3f8"
 SURFACE   = "#ffffff"
 SURFACE_2 = "#f8fafc"
 BORDER    = "#dfe3ec"
@@ -40,6 +39,9 @@ MUTED     = "#64748b"
 LOG_BG    = "#0f172a"
 LOG_FG    = "#cbd5e1"
 LOG_ACCENT = "#f8fafc"
+GOLD      = "#ffd180"
+
+STEP_RE = re.compile(r"\[(\d+)/(\d+)\]")
 
 
 def _open_path(path: str) -> None:
@@ -47,11 +49,9 @@ def _open_path(path: str) -> None:
         if sys.platform.startswith("win"):
             os.startfile(path)  # type: ignore[attr-defined]
         elif sys.platform == "darwin":
-            import subprocess
-            subprocess.Popen(["open", path])
+            import subprocess; subprocess.Popen(["open", path])
         else:
-            import subprocess
-            subprocess.Popen(["xdg-open", path])
+            import subprocess; subprocess.Popen(["xdg-open", path])
     except Exception:
         pass
 
@@ -59,263 +59,237 @@ def _open_path(path: str) -> None:
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Company Snapshot — DART 공시 자동 분석")
-        self.geometry("900x760")
-        self.minsize(820, 640)
+        self.title("Company Snapshot")
+        self.geometry("840x680")
+        self.minsize(720, 540)
         self.configure(bg=BG)
         self._running = False
         self._search_after_id = None
+        self._settings_visible = False
 
         self._apply_style()
         self._build_ui()
 
-    # ── 스타일 적용 ───────────────────────────────────────────────────
+    # ── 스타일 ────────────────────────────────────────────────────────
     def _apply_style(self) -> None:
-        style = ttk.Style(self)
+        s = ttk.Style(self)
         try:
-            style.theme_use("clam")
+            s.theme_use("clam")
         except tk.TclError:
             pass
 
-        # 앱 전체 기본 배경
-        self.configure(bg=BG)
+        s.configure("Header.TFrame", background=PRIMARY)
+        s.configure("Header.TLabel", background=PRIMARY, foreground="#ffffff",
+                    font=("Segoe UI", 14, "bold"))
+        s.configure("HeaderSub.TLabel", background=PRIMARY, foreground="#7b8ec9",
+                    font=("Segoe UI", 9))
 
-        # HERO
-        style.configure("Hero.TFrame", background=PRIMARY)
-        style.configure("HeroInner.TFrame", background=PRIMARY)
-        style.configure("Hero.TLabel", background=PRIMARY, foreground="#ffffff",
-                        font=("Segoe UI", 22, "bold"))
-        style.configure("HeroSub.TLabel", background=PRIMARY, foreground="#aebfff",
-                        font=("Segoe UI", 10))
-        style.configure("HeroPill.TLabel",
-                        background="#1f2a6e", foreground="#ffd180",
-                        font=("Segoe UI", 9, "bold"), padding=(12, 5))
+        s.configure("TLabel", background=SURFACE, foreground=INK,
+                    font=("Segoe UI", 10))
+        s.configure("Field.TLabel", background=SURFACE, foreground=INK_3,
+                    font=("Segoe UI", 9, "bold"))
+        s.configure("BG.TLabel", background=BG, foreground=INK,
+                    font=("Segoe UI", 10))
+        s.configure("Step.TLabel", background=BG, foreground=PRIMARY_3,
+                    font=("Segoe UI", 10, "bold"))
 
-        # BG (루트 배경과 맞춤)
-        style.configure("Root.TFrame", background=BG)
-        style.configure("Card.TFrame", background=SURFACE, borderwidth=0)
+        s.configure("Card.TFrame", background=SURFACE)
+        s.configure("Card.TLabelframe", background=SURFACE, padding=14,
+                    relief="flat", borderwidth=1, bordercolor=BORDER)
+        s.configure("Card.TLabelframe.Label", background=SURFACE,
+                    foreground=PRIMARY_2, font=("Segoe UI", 10, "bold"))
 
-        # LabelFrame as 카드
-        style.configure("Card.TLabelframe",
-                        background=SURFACE, padding=18,
-                        relief="flat", borderwidth=1,
-                        bordercolor=BORDER)
-        style.configure("Card.TLabelframe.Label",
-                        background=SURFACE,
-                        foreground=PRIMARY_2,
-                        font=("Segoe UI", 10, "bold"))
+        s.configure("TEntry", fieldbackground=SURFACE_2, foreground=INK,
+                    bordercolor=BORDER_2, lightcolor=BORDER_2, padding=6)
+        s.map("TEntry", bordercolor=[("focus", PRIMARY_3)],
+              lightcolor=[("focus", PRIMARY_3)])
+        s.configure("TCombobox", fieldbackground=SURFACE_2, padding=5,
+                    bordercolor=BORDER_2, lightcolor=BORDER_2)
+        s.configure("TSpinbox", fieldbackground=SURFACE_2, padding=4,
+                    bordercolor=BORDER_2, lightcolor=BORDER_2)
+        s.configure("TCheckbutton", background=SURFACE, foreground=INK,
+                    font=("Segoe UI", 9))
 
-        # 라벨/입력
-        style.configure("TLabel", background=SURFACE, foreground=INK,
-                        font=("Segoe UI", 10))
-        style.configure("Field.TLabel", background=SURFACE, foreground=INK_3,
-                        font=("Segoe UI", 9, "bold"))
-        style.configure("Hint.TLabel", background=SURFACE, foreground=MUTED,
-                        font=("Segoe UI", 8))
-        style.configure("TEntry",
-                        fieldbackground=SURFACE_2, foreground=INK,
-                        bordercolor=BORDER_2, lightcolor=BORDER_2,
-                        padding=6)
-        style.map("TEntry",
-                  bordercolor=[("focus", PRIMARY_3)],
-                  lightcolor=[("focus", PRIMARY_3)])
-        style.configure("TCombobox",
-                        fieldbackground=SURFACE_2, padding=5,
-                        bordercolor=BORDER_2, lightcolor=BORDER_2)
-        style.configure("TSpinbox",
-                        fieldbackground=SURFACE_2, padding=4,
-                        bordercolor=BORDER_2, lightcolor=BORDER_2)
-        style.configure("TCheckbutton",
-                        background=SURFACE, foreground=INK,
-                        font=("Segoe UI", 10))
+        s.configure("Primary.TButton", background=PRIMARY_2, foreground="#ffffff",
+                    font=("Segoe UI", 12, "bold"), padding=(18, 12),
+                    borderwidth=0, relief="flat")
+        s.map("Primary.TButton",
+              background=[("active", PRIMARY_3), ("pressed", PRIMARY),
+                          ("disabled", "#94a3b8")],
+              foreground=[("disabled", "#f1f5f9")])
+        s.configure("Ghost.TButton", background=SURFACE_2, foreground=PRIMARY_2,
+                    font=("Segoe UI", 9, "bold"), padding=(10, 6),
+                    borderwidth=1, relief="solid", bordercolor=BORDER_2)
+        s.map("Ghost.TButton", background=[("active", "#eef2fb")],
+              bordercolor=[("active", PRIMARY_3)])
+        s.configure("Toggle.TButton", background=BG, foreground=INK_3,
+                    font=("Segoe UI", 9, "bold"), padding=(10, 6),
+                    borderwidth=0, relief="flat")
+        s.map("Toggle.TButton", background=[("active", BORDER)])
 
-        # 큰 Primary 버튼 (분석 시작)
-        style.configure("Primary.TButton",
-                        background=PRIMARY_2, foreground="#ffffff",
-                        font=("Segoe UI", 13, "bold"),
-                        padding=(18, 14),
-                        borderwidth=0, relief="flat")
-        style.map("Primary.TButton",
-                  background=[("active", PRIMARY_3),
-                              ("pressed", PRIMARY),
-                              ("disabled", "#94a3b8")],
-                  foreground=[("disabled", "#f1f5f9")])
-        # Accent 액센트 버튼 (미사용 포함)
-        style.configure("Accent.TButton",
-                        background=ACCENT, foreground="#ffffff",
-                        font=("Segoe UI", 10, "bold"),
-                        padding=(12, 8),
-                        borderwidth=0, relief="flat")
-        style.map("Accent.TButton",
-                  background=[("active", ACCENT_2)])
-        # Ghost 보조 버튼 (찾아보기)
-        style.configure("Ghost.TButton",
-                        background=SURFACE_2, foreground=PRIMARY_2,
-                        font=("Segoe UI", 9, "bold"),
-                        padding=(12, 7),
-                        borderwidth=1, relief="solid", bordercolor=BORDER_2)
-        style.map("Ghost.TButton",
-                  background=[("active", "#eef2fb")],
-                  bordercolor=[("active", PRIMARY_3)])
+        s.configure("Status.TFrame", background=PRIMARY)
+        s.configure("Status.TLabel", background=PRIMARY, foreground="#7b8ec9",
+                    font=("Segoe UI", 8))
+        s.configure("StatusLink.TLabel", background=PRIMARY, foreground=GOLD,
+                    font=("Segoe UI", 8, "bold"))
 
-        # 상태바
-        style.configure("Status.TFrame", background=PRIMARY)
-        style.configure("Status.TLabel",
-                        background=PRIMARY, foreground="#94a3b8",
-                        font=("Segoe UI", 9))
-        style.configure("StatusLink.TLabel",
-                        background=PRIMARY, foreground=GOLD,
-                        font=("Segoe UI", 9, "bold"))
-
-    # ── UI 구성 ───────────────────────────────────────────────────────
+    # ── UI ─────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        # ─── 1) HERO 배너
-        hero_wrap = tk.Frame(self, bg=PRIMARY, highlightthickness=0)
-        hero_wrap.pack(fill="x")
-        hero = ttk.Frame(hero_wrap, style="Hero.TFrame", padding=(32, 24, 32, 22))
-        hero.pack(fill="x")
-        ttk.Label(hero, text="Company Snapshot",
-                  style="Hero.TLabel").pack(anchor="w")
-        ttk.Label(hero, text="DART 공시 자동 분석 · 클릭 한 번으로 기업 리포트",
-                  style="HeroSub.TLabel").pack(anchor="w", pady=(4, 10))
-        ttk.Label(hero, text=f"v{__version__}    문의 · {cfgmod.CONTACT_EMAIL}",
-                  style="HeroPill.TLabel").pack(anchor="w")
+        # ─── 1. 슬림 헤더 (1줄)
+        hdr = ttk.Frame(self, style="Header.TFrame", padding=(20, 10, 20, 10))
+        hdr.pack(fill="x")
+        ttk.Label(hdr, text="Company Snapshot",
+                  style="Header.TLabel").pack(side="left")
+        ttk.Label(hdr, text=f"  v{__version__}",
+                  style="HeaderSub.TLabel").pack(side="left", padx=(4, 0))
 
-        # ─── 2) 본문 영역 (카드 래퍼)
-        wrap = tk.Frame(self, bg=BG)
-        wrap.pack(fill="x", padx=20, pady=(14, 0))
+        # ─── 2. 핵심 입력 영역 (회사명 + 기간 + 버튼)
+        core = ttk.Frame(self, style="Card.TFrame", padding=(20, 16, 20, 12))
+        core.pack(fill="x", padx=16, pady=(12, 0))
 
-        # Card 1: 분석 대상
-        card1 = ttk.Labelframe(wrap, text=" 분석 대상 ", style="Card.TLabelframe")
-        card1.pack(fill="x", pady=(0, 10))
-
-        ttk.Label(card1, text="회사명", style="Field.TLabel").grid(
-            row=0, column=0, sticky="w", padx=4, pady=6)
-        self.var_company = tk.StringVar(value="")
-        self.cmb_company = ttk.Combobox(card1, textvariable=self.var_company, width=40)
-        self.cmb_company.grid(row=0, column=1, columnspan=3, sticky="we", padx=4)
+        # 회사명 (row 0)
+        ttk.Label(core, text="회사명", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 8))
+        self.var_company = tk.StringVar()
+        self.cmb_company = ttk.Combobox(core, textvariable=self.var_company, width=36)
+        self.cmb_company.grid(row=0, column=1, columnspan=3, sticky="we", pady=(0, 8))
         self.cmb_company.bind("<KeyRelease>", self._on_company_key)
 
-        ttk.Label(card1, text="조회기간", style="Field.TLabel").grid(
-            row=1, column=0, sticky="w", padx=4, pady=6)
+        # 기간 + 재무연수 (row 1)
+        ttk.Label(core, text="기간", style="Field.TLabel").grid(
+            row=1, column=0, sticky="w", padx=(0, 8))
         self.var_period = tk.IntVar(value=3)
-        ttk.Spinbox(card1, from_=1, to=120, width=6,
-                    textvariable=self.var_period).grid(row=1, column=1, sticky="w", padx=4)
+        ttk.Spinbox(core, from_=1, to=120, width=5,
+                    textvariable=self.var_period).grid(row=1, column=1, sticky="w")
         self.var_unit = tk.StringVar(value="년")
-        ttk.Combobox(card1, textvariable=self.var_unit, values=["년", "개월"],
-                     width=6, state="readonly").grid(row=1, column=2, sticky="w", padx=4)
-
-        ttk.Label(card1, text="재무 조회 연수", style="Field.TLabel").grid(
-            row=1, column=3, sticky="e", padx=(20, 4))
+        ttk.Combobox(core, textvariable=self.var_unit, values=["년", "개월"],
+                     width=5, state="readonly").grid(row=1, column=2, sticky="w", padx=4)
+        ttk.Label(core, text="재무", style="Field.TLabel").grid(
+            row=1, column=3, sticky="e", padx=(12, 4))
         self.var_years = tk.IntVar(value=4)
-        ttk.Spinbox(card1, from_=1, to=10, width=6,
-                    textvariable=self.var_years).grid(row=1, column=4, sticky="w", padx=4)
+        ttk.Spinbox(core, from_=1, to=10, width=5,
+                    textvariable=self.var_years).grid(row=1, column=4, sticky="w")
+        ttk.Label(core, text="년", style="Field.TLabel").grid(
+            row=1, column=5, sticky="w")
 
-        card1.grid_columnconfigure(1, weight=1)
+        core.grid_columnconfigure(1, weight=1)
 
-        # Card 2: LLM 설정
-        card2 = ttk.Labelframe(wrap, text=" LLM 분석 설정 (Claude) ",
-                               style="Card.TLabelframe")
-        card2.pack(fill="x", pady=(0, 10))
+        # 실행 버튼 (row 2)
+        self.btn_run = ttk.Button(core, text="▶  분석 시작",
+                                  style="Primary.TButton", command=self._start)
+        self.btn_run.grid(row=2, column=0, columnspan=6, sticky="we", pady=(12, 0))
 
-        # ── Claude 작업 토글 5종 (모두 독립) ──
+        # ─── 3. 설정 토글
+        toggle_bar = tk.Frame(self, bg=BG)
+        toggle_bar.pack(fill="x", padx=16, pady=(8, 0))
+        self.btn_toggle = ttk.Button(toggle_bar, text="⚙  설정 ▸",
+                                     style="Toggle.TButton",
+                                     command=self._toggle_settings)
+        self.btn_toggle.pack(side="left")
+
+        # ─── 4. 접이식 설정 패널 (기본 숨김)
+        self._settings_frame = tk.Frame(self, bg=BG)
+        # 내부 카드 구성
+        inner = tk.Frame(self._settings_frame, bg=BG)
+        inner.pack(fill="x", padx=16, pady=(4, 0))
+
+        # 출력 + LLM 을 좌우 2열로 배치
+        left = ttk.Labelframe(inner, text=" 출력 ", style="Card.TLabelframe")
+        left.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        ttk.Label(left, text="폴더", style="Field.TLabel").grid(
+            row=0, column=0, sticky="w", padx=2, pady=2)
+        self.var_outdir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
+        ttk.Entry(left, textvariable=self.var_outdir, width=28).grid(
+            row=0, column=1, sticky="we", padx=2)
+        ttk.Button(left, text="…", style="Ghost.TButton",
+                   command=self._browse, width=3).grid(row=0, column=2, padx=2)
+        self.var_save_log = tk.BooleanVar(value=True)
+        ttk.Checkbutton(left, text="로그 파일 저장",
+                        variable=self.var_save_log).grid(
+            row=1, column=0, columnspan=3, sticky="w", padx=2, pady=(4, 0))
+        left.grid_columnconfigure(1, weight=1)
+
+        right = ttk.Labelframe(inner, text=" LLM (Claude) ", style="Card.TLabelframe")
+        right.pack(side="left", fill="both", expand=True, padx=(6, 0))
+
+        # 체크박스 2열 배치
         self.var_summarize = tk.BooleanVar(value=True)
         self.var_exec_summary = tk.BooleanVar(value=True)
         self.var_biz_profile = tk.BooleanVar(value=True)
         self.var_footnotes = tk.BooleanVar(value=True)
         self.var_da_llm = tk.BooleanVar(value=True)
 
-        ttk.Checkbutton(card2,
-                        text="① 공시 요약 · 시사점 (Summary + Key Points + Implication)",
+        ttk.Checkbutton(right, text="공시 요약·시사점",
                         variable=self.var_summarize).grid(
-            row=0, column=0, columnspan=5, sticky="w", padx=4, pady=(4, 0))
-        ttk.Checkbutton(card2,
-                        text="② Executive Summary (경영진 종합 요약 — ①이 재료)",
+            row=0, column=0, sticky="w", padx=2)
+        ttk.Checkbutton(right, text="Executive Summary",
                         variable=self.var_exec_summary).grid(
-            row=1, column=0, columnspan=5, sticky="w", padx=4)
-        ttk.Checkbutton(card2,
-                        text="③ Business Profile (회사 개요 · 사업부 구조)",
+            row=0, column=1, sticky="w", padx=2)
+        ttk.Checkbutton(right, text="Business Profile",
                         variable=self.var_biz_profile).grid(
-            row=2, column=0, columnspan=5, sticky="w", padx=4)
-        ttk.Checkbutton(card2,
-                        text="④ Footnotes (감사보고서/사업보고서 주요 주석 정리)",
+            row=1, column=0, sticky="w", padx=2)
+        ttk.Checkbutton(right, text="Footnotes",
                         variable=self.var_footnotes).grid(
-            row=3, column=0, columnspan=5, sticky="w", padx=4)
-        ttk.Checkbutton(card2,
-                        text="⑤ D&A 본문 LLM 보강 (API 로 못 잡은 연도 자동 채움)",
+            row=1, column=1, sticky="w", padx=2)
+        ttk.Checkbutton(right, text="D&A LLM 보강",
                         variable=self.var_da_llm).grid(
-            row=4, column=0, columnspan=5, sticky="w", padx=4, pady=(0, 4))
+            row=2, column=0, sticky="w", padx=2, pady=(0, 4))
 
-        ttk.Separator(card2, orient="horizontal").grid(
-            row=5, column=0, columnspan=5, sticky="we", padx=4, pady=4)
-
-        ttk.Label(card2, text="분석 최대 건수", style="Field.TLabel").grid(
-            row=6, column=0, sticky="w", padx=4, pady=6)
-        self.var_limit = tk.IntVar(value=20)
-        ttk.Spinbox(card2, from_=1, to=200, width=6,
-                    textvariable=self.var_limit).grid(row=6, column=1, sticky="w", padx=4)
-
-        ttk.Label(card2, text="Claude 모델", style="Field.TLabel").grid(
-            row=7, column=0, sticky="w", padx=4, pady=6)
+        # 모델 + API Key (row 3-4)
+        ttk.Label(right, text="모델", style="Field.TLabel").grid(
+            row=3, column=0, sticky="w", padx=2, pady=2)
         self.var_model = tk.StringVar(value=cfgmod.ANTHROPIC_MODEL)
-        ttk.Combobox(card2, textvariable=self.var_model,
+        self.var_limit = tk.IntVar(value=20)
+        model_row = tk.Frame(right, bg=SURFACE)
+        model_row.grid(row=3, column=1, sticky="we", padx=2)
+        ttk.Combobox(model_row, textvariable=self.var_model,
                      values=cfgmod.AVAILABLE_MODELS,
-                     width=28, state="readonly").grid(
-            row=7, column=1, columnspan=2, sticky="w", padx=4)
+                     width=20, state="readonly").pack(side="left")
+        ttk.Label(model_row, text=" max:", style="Field.TLabel").pack(side="left", padx=(8,2))
+        ttk.Spinbox(model_row, from_=1, to=200, width=4,
+                    textvariable=self.var_limit).pack(side="left")
 
-        ttk.Label(card2, text="Anthropic API Key", style="Field.TLabel").grid(
-            row=8, column=0, sticky="w", padx=4, pady=6)
+        ttk.Label(right, text="API Key", style="Field.TLabel").grid(
+            row=4, column=0, sticky="w", padx=2, pady=2)
         self.var_key = tk.StringVar(value=cfgmod.ANTHROPIC_API_KEY)
-        ttk.Entry(card2, textvariable=self.var_key, show="•", width=56).grid(
-            row=8, column=1, columnspan=4, sticky="we", padx=4)
+        ttk.Entry(right, textvariable=self.var_key, show="•", width=32).grid(
+            row=4, column=1, sticky="we", padx=2)
 
-        card2.grid_columnconfigure(1, weight=1)
+        right.grid_columnconfigure(1, weight=1)
 
-        # Card 3: 출력
-        card3 = ttk.Labelframe(wrap, text=" 출력 ", style="Card.TLabelframe")
-        card3.pack(fill="x", pady=(0, 10))
+        # ─── 5. 진행 영역 (스텝 인디케이터 + 로그)
+        log_outer = tk.Frame(self, bg=BG)
+        log_outer.pack(fill="both", expand=True, padx=16, pady=(8, 8))
 
-        ttk.Label(card3, text="출력 폴더", style="Field.TLabel").grid(
-            row=0, column=0, sticky="w", padx=4, pady=4)
-        self.var_outdir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
-        ttk.Entry(card3, textvariable=self.var_outdir).grid(
-            row=0, column=1, sticky="we", padx=4)
-        ttk.Button(card3, text="찾아보기", style="Ghost.TButton",
-                   command=self._browse).grid(row=0, column=2, padx=4)
+        # 스텝 인디케이터 + 프로그레스 바
+        step_bar = tk.Frame(log_outer, bg=BG)
+        step_bar.pack(fill="x", pady=(0, 4))
+        tk.Label(step_bar, text="●", bg=BG, fg=PRIMARY_3,
+                 font=("Segoe UI", 9)).pack(side="left")
+        self.lbl_step = tk.Label(step_bar, text="  대기 중",
+                                 bg=BG, fg=INK_3,
+                                 font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_step.pack(side="left", padx=(4, 0))
+        self.lbl_pct = tk.Label(step_bar, text="",
+                                bg=BG, fg=MUTED,
+                                font=("Segoe UI", 9), anchor="e")
+        self.lbl_pct.pack(side="right")
 
-        self.var_save_log = tk.BooleanVar(value=True)
-        ttk.Checkbutton(card3,
-                        text="상세 로그 파일 저장 (_log_회사_시각.txt) — 문제 진단용",
-                        variable=self.var_save_log).grid(
-            row=1, column=0, columnspan=3, sticky="w", padx=4, pady=(2, 4))
+        self.progress = ttk.Progressbar(log_outer, orient="horizontal",
+                                        length=100, mode="determinate",
+                                        maximum=100)
+        self.progress.pack(fill="x", pady=(0, 4))
 
-        card3.grid_columnconfigure(1, weight=1)
-
-        # ─── 3) 실행 버튼 (큰 Primary)
-        btnwrap = tk.Frame(self, bg=BG)
-        btnwrap.pack(fill="x", padx=20, pady=(8, 10))
-        self.btn_run = ttk.Button(btnwrap, text="▶   분석 시작",
-                                  style="Primary.TButton", command=self._start)
-        self.btn_run.pack(fill="x")
-
-        # ─── 4) 로그 영역 (다크 배경)
-        logwrap = tk.Frame(self, bg=BG)
-        logwrap.pack(fill="both", expand=True, padx=20, pady=(0, 8))
-        log_header = tk.Frame(logwrap, bg=LOG_BG, height=36, highlightthickness=0)
-        log_header.pack(fill="x")
-        tk.Label(log_header, text="  ●  진행 로그",
-                 bg=LOG_BG, fg=LOG_ACCENT,
-                 font=("Segoe UI", 10, "bold"),
-                 anchor="w", padx=14, pady=8).pack(side="left")
-
-        log_inner = tk.Frame(logwrap, bg=LOG_BG, bd=0, highlightthickness=0)
-        log_inner.pack(fill="both", expand=True)
+        # 로그 텍스트
+        log_frame = tk.Frame(log_outer, bg=LOG_BG, bd=0, highlightthickness=0)
+        log_frame.pack(fill="both", expand=True)
         self.txt = scrolledtext.ScrolledText(
-            log_inner, height=14, wrap="word",
-            font=("Consolas", 10),
+            log_frame, wrap="word",
+            font=("Consolas", 9),
             bg=LOG_BG, fg=LOG_FG,
             insertbackground=LOG_FG,
-            bd=0, padx=14, pady=12,
+            bd=0, padx=12, pady=10,
             highlightthickness=0,
         )
         self.txt.pack(fill="both", expand=True)
@@ -323,29 +297,39 @@ class App(tk.Tk):
         self.txt.tag_configure("warn", foreground="#fcd34d")
         self.txt.tag_configure("err", foreground="#fca5a5")
 
-        # ─── 5) 상태바
+        # ─── 6. 상태바
         status = ttk.Frame(self, style="Status.TFrame",
-                           padding=(20, 10, 20, 10))
+                           padding=(16, 6, 16, 6))
         status.pack(fill="x", side="bottom")
-        ttk.Label(status,
-                  text=f"Company Snapshot   v{__version__}",
+        ttk.Label(status, text=f"v{__version__}",
                   style="Status.TLabel").pack(side="left")
-        ttk.Label(status, text="│", style="Status.TLabel").pack(side="left", padx=12)
-        ttk.Label(status, text="문의:",
-                  style="Status.TLabel").pack(side="left")
-        ttk.Label(status,
-                  text=cfgmod.CONTACT_EMAIL,
-                  style="StatusLink.TLabel").pack(side="left", padx=(6, 0))
+        ttk.Label(status, text="│", style="Status.TLabel").pack(
+            side="left", padx=8)
+        ttk.Label(status, text=cfgmod.CONTACT_EMAIL,
+                  style="StatusLink.TLabel").pack(side="left")
 
-        # 기본 포커스·엔터 바인딩
+        # 포커스 + Enter 바인딩
         self.cmb_company.focus_set()
         self.bind("<Return>", lambda e: self._start())
+        self._log("회사명을 입력하고 [▶ 분석 시작] 을 누르세요.")
 
-        self._log("Company Snapshot 준비 완료.  회사명을 입력하고 [▶ 분석 시작] 을 누르세요.")
+    # ── 설정 토글 ─────────────────────────────────────────────────────
+    def _toggle_settings(self) -> None:
+        if self._settings_visible:
+            self._settings_frame.pack_forget()
+            self.btn_toggle.config(text="⚙  설정 ▸")
+            self._settings_visible = False
+        else:
+            # 로그 영역 바로 위에 삽입 (pack order 보장)
+            self._settings_frame.pack(fill="x",
+                                      after=self.btn_toggle.master)
+            self.btn_toggle.config(text="⚙  설정 ▾")
+            self._settings_visible = True
 
-    # ── 회사명 후보 autocomplete ─────────────────────────────────────
+    # ── 회사명 autocomplete ───────────────────────────────────────────
     def _on_company_key(self, event) -> None:
-        if event.keysym in ("Up", "Down", "Return", "Tab", "Escape", "Left", "Right"):
+        if event.keysym in ("Up", "Down", "Return", "Tab",
+                            "Escape", "Left", "Right"):
             return
         if self._search_after_id is not None:
             try:
@@ -382,11 +366,24 @@ class App(tk.Tk):
         if d:
             self.var_outdir.set(d)
 
-    # ── 로그 ──────────────────────────────────────────────────────────
+    # ── 로그 + 스텝 업데이트 ──────────────────────────────────────────
     def _log(self, msg: str) -> None:
         def _append():
             self.txt.insert("end", msg.rstrip() + "\n")
             self.txt.see("end")
+            # 스텝 인디케이터 + 프로그레스 바 업데이트
+            m = STEP_RE.search(msg)
+            if m:
+                cur, total = int(m.group(1)), int(m.group(2))
+                rest = msg[m.end():].strip()
+                self.lbl_step.config(text=f"  [{cur}/{total}] {rest[:60]}")
+                pct = int(cur / total * 100) if total else 0
+                self.progress["value"] = pct
+                self.lbl_pct.config(text=f"{pct}%")
+            elif "✓" in msg or "완료" in msg:
+                self.lbl_step.config(text="  ✓ 완료")
+                self.progress["value"] = 100
+                self.lbl_pct.config(text="100%")
         try:
             self.after(0, _append)
         except Exception:
@@ -419,6 +416,9 @@ class App(tk.Tk):
         )
         self._running = True
         self.btn_run.config(state="disabled", text="  분석 중…")
+        self.lbl_step.config(text="  시작 중…")
+        self.lbl_pct.config(text="0%")
+        self.progress["value"] = 0
         self.txt.delete("1.0", "end")
         threading.Thread(target=self._worker, args=(cfg,), daemon=True).start()
 
