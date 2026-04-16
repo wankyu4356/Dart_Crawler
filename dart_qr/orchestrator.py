@@ -395,6 +395,14 @@ def run_quickreport(cfg: RunConfig, log: LogFn = print) -> RunResult:
     if _log_fh:
         log(f"[로그파일] {_log_path}")
         log(f"[환경] Python {sys.version.split()[0]} · {platform.platform()}")
+        log(f"[인코딩] stdout={getattr(sys.stdout, 'encoding', '?')} "
+            f"stderr={getattr(sys.stderr, 'encoding', '?')} "
+            f"fs={sys.getfilesystemencoding()}")
+        try:
+            import anthropic as _anth
+            log(f"[SDK] anthropic {_anth.__version__}")
+        except Exception:
+            pass
         log(f"[설정] company={cfg.company} period={cfg.period_value}{cfg.period_unit} "
             f"years_back={cfg.years_back} body_limit={cfg.body_limit} "
             f"model={cfg.anthropic_model or 'default'}")
@@ -554,7 +562,9 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
                 log(f"  → 요약 {len(biz.get('business_summary','') or '')}자 · "
                     f"사업부 {n_seg}건")
         except Exception as exc:  # noqa: BLE001
-            log(f"  ⚠ Business Profile 오류: {exc}")
+            import traceback as _tb
+            log(f"  ⚠ Business Profile 오류: {type(exc).__name__}: {exc}")
+            log(f"    {_tb.format_exc().splitlines()[-2] if _tb.format_exc() else ''}")
             biz = None
 
     # 6.6) Footnotes (독립 토글)

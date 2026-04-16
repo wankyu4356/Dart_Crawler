@@ -140,7 +140,8 @@ def summarize_disclosure(
             disc.implication = str(parsed.get("implication", "")).strip()
             disc.llm_status = "ok"
     except Exception as exc:  # noqa: BLE001
-        disc.summary = f"(LLM 오류: {exc})"
+        import traceback
+        disc.summary = f"(LLM 오류: {type(exc).__name__}: {exc})"
         disc.llm_status = "error"
     return disc
 
@@ -451,8 +452,10 @@ def extract_da_from_body(
             parsed = []
         return (parsed, raw) if return_raw else parsed
     except Exception as exc:  # noqa: BLE001
+        import traceback
+        tb = traceback.format_exc()
         if return_raw:
-            return ([], f"__EXCEPTION__ {exc}")
+            return ([], f"__EXCEPTION__ {type(exc).__name__}: {exc}\n{tb}")
         return []
 
 

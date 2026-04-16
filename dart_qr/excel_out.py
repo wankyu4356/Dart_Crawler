@@ -642,52 +642,74 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
 
     if not years_seen:
         return
-    years = sorted(years_seen, reverse=True)   # 최신 → 과거
+    years = sorted(years_seen)   # 과거 → 최신 (좌→우)
 
     ws = wb.create_sheet("재무제표_상세")
-    headers = ["구분", "계정ID", "계정명", "계정상세", *[f"{y}" for y in years], "통화"]
-    ws.append(headers)
-    _style_header(ws, 1, len(headers))
+    ws.sheet_view.showGridLines = False
 
+    # 좌측 여백
+    C = 2  # 콘텐츠 시작 컬럼
+    ws.column_dimensions["A"].width = 3
+
+    # 타이틀
+    ws.cell(row=1, column=C, value="재무제표 상세 (DART API 원본)").font = Font(
+        bold=True, size=14, color=_THEME_HEX, name="Calibri")
+    ws.row_dimensions[1].height = 30
+
+    # 헤더 행 (row 3)
+    hdr_row = 3
+    hdr_labels = ["계정명", *[f"{y}" for y in years]]
+    for ci, h in enumerate(hdr_labels):
+        cell = ws.cell(row=hdr_row, column=C + ci, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = PatternFill("solid", fgColor=_THEME_HEX)
+        cell.alignment = HEADER_ALIGN
+        cell.border = HEADER_BORDER
+    ws.row_dimensions[hdr_row].height = 26
+
+    r = hdr_row + 1
     for sj in SJ_ORDER:
         sj_keys = sorted([k for k in pivot if k[0] == sj], key=lambda k: k[3])
         if not sj_keys:
             continue
-        # 섹션 헤더 행
-        ws.append([SJ_LABEL.get(sj, sj)])
-        ridx = ws.max_row
-        for c in range(1, len(headers) + 1):
-            cell = ws.cell(row=ridx, column=c)
-            cell.font = Font(bold=True, color="305496")
-            cell.fill = SUBHEADER_FILL
+        # 섹션 배너
+        label = SJ_LABEL.get(sj, sj)
+        ws.cell(row=r, column=C, value=label).font = Font(
+            bold=True, color="FFFFFF", size=11, name="Calibri")
+        for ci in range(len(hdr_labels)):
+            cell = ws.cell(row=r, column=C + ci)
+            cell.fill = PatternFill("solid", fgColor=_THEME_HEX)
+            cell.font = Font(bold=True, color="FFFFFF", name="Calibri")
+        ws.row_dimensions[r].height = 22
+        r += 1
 
-        for key in sj_keys:
+        for idx, key in enumerate(sj_keys):
             sj_, aid, anm, ordn = key
-            m = meta.get(key, {})
-            row_vals: List[Any] = [
-                SJ_LABEL.get(sj_, sj_), aid, anm, m.get("account_detail", ""),
-            ]
-            for y in years:
+            # 계정명
+            ws.cell(row=r, column=C, value=anm).font = BODY_FONT
+            # 연도별 금액
+            for yi, y in enumerate(years):
                 v = pivot[key].get(y)
-                row_vals.append(v)
-            row_vals.append(m.get("currency", ""))
-            ws.append(row_vals)
-            r_idx = ws.max_row
-            # 연도 컬럼 포맷
-            for c in range(5, 5 + len(years)):
-                cell = ws.cell(row=r_idx, column=c)
+                cell = ws.cell(row=r, column=C + 1 + yi, value=v)
                 cell.number_format = KRW_FMT
-                cell.alignment = Alignment(horizontal="right")
+                cell.alignment = RIGHT_ALIGN
+                cell.font = BODY_FONT
+            # zebra striping
+            if idx % 2 == 0:
+                for ci in range(len(hdr_labels)):
+                    ws.cell(row=r, column=C + ci).fill = PatternFill(
+                        "solid", fgColor="F7F9FC")
+            # border
+            for ci in range(len(hdr_labels)):
+                ws.cell(row=r, column=C + ci).border = THIN_BORDER
+            r += 1
+        r += 1  # 섹션 간 빈 행
 
-    # 상단 고정 + 열 너비
-    ws.freeze_panes = "E2"
-    ws.column_dimensions["A"].width = 12
-    ws.column_dimensions["B"].width = 36
-    ws.column_dimensions["C"].width = 32
-    ws.column_dimensions["D"].width = 22
-    for i in range(len(years)):
-        ws.column_dimensions[get_column_letter(5 + i)].width = 18
-    ws.column_dimensions[get_column_letter(5 + len(years))].width = 8
+    # 열 너비
+    ws.column_dimensions[get_column_letter(C)].width = 28  # 계정명
+    for yi in range(len(years)):
+        ws.column_dimensions[get_column_letter(C + 1 + yi)].width = 20
+    ws.freeze_panes = ws.cell(row=hdr_row + 1, column=C + 1).coordinate
 
 
 def _write_raw_fs(wb: Workbook, fin: FinancialsBundle) -> None:
