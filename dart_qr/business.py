@@ -358,9 +358,12 @@ def fetch_footnotes(
             log(f"    주석 섹션 부족 → 다음")
             continue
         log(f"    본문 {len(body_full):,}자 → 주석 {len(section):,}자 추출")
-        parsed = llm_mod.extract_footnotes_from_body(section, client=client, **kwargs)
+        parsed, raw = llm_mod.extract_footnotes_from_body(
+            section, client=client, return_raw=True, **kwargs,
+        )
         if not parsed or not any(v for v in parsed.values() if isinstance(v, list)):
-            log(f"    LLM 결과 비어있음 → 다음")
+            preview = (raw or "").replace("\n", " ")[:300]
+            log(f"    LLM 결과 비어있음 (응답 {len(raw)}자): {preview!r} → 다음")
             continue
         parsed["_source_report_nm"] = src.get("report_nm", "")
         parsed["_source_rcept_no"]  = src.get("rcept_no", "")
@@ -402,9 +405,12 @@ def fetch_business_profile(
             continue
         log(f"    사업 섹션 {len(section):,}자 → Claude 추출")
 
-        parsed = llm_mod.extract_business_overview(section, client=client, **kwargs)
+        parsed, raw = llm_mod.extract_business_overview(
+            section, client=client, return_raw=True, **kwargs,
+        )
         if not parsed:
-            log(f"    LLM 응답 비어있음 → 다음 후보 시도")
+            preview = (raw or "").replace("\n", " ")[:300]
+            log(f"    LLM 응답 비어있음 (응답 {len(raw)}자): {preview!r} → 다음 후보 시도")
             continue
 
         parsed["_source_report_nm"] = src.get("report_nm", "")

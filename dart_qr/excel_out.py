@@ -643,35 +643,70 @@ def _is_section_header(name: str) -> bool:
 # DART API 의 ord 가 연도별로 불일치할 때를 대비한 canonical order.
 _IS_CANONICAL = [
     # 손익계산서 / 포괄손익계산서 표준 순서
-    ("매출", 10), ("수익", 11), ("영업수익", 12),
-    ("매출원가", 20), ("영업비용", 21),
-    ("매출총이익", 30), ("매출총손실", 31),
-    ("판매비와관리비", 40), ("판매비", 41), ("관리비", 42), ("판관비", 43),
-    ("영업이익", 50), ("영업손실", 51),
-    ("기타수익", 60), ("기타이익", 61),
-    ("기타비용", 65), ("기타손실", 66),
-    ("금융수익", 70), ("이자수익", 71), ("금융원가", 75), ("금융비용", 76), ("이자비용", 77),
-    ("지분법이익", 80), ("지분법손실", 81),
-    ("법인세차감전", 85), ("차감전순이익", 86),
-    ("법인세비용", 90), ("법인세", 91),
+    ("매출액", 10), ("영업수익", 11), ("수익(매출액)", 12),
+    ("매출", 13),  # 짧은 '매출' 은 뒤로 (긴 매치 먼저)
+    ("매출원가", 20), ("용역원가", 21),
+    ("매출총이익", 30), ("매출총손실", 31), ("매출총이익손실", 32),
+    ("매출총손익", 33),
+    ("판매비와관리비", 40), ("판매비및관리비", 41),
+    ("영업비용", 45),   # 서비스업 등
+    ("영업이익", 50), ("영업손실", 51), ("영업손익", 52),
+    # 영업외 (기타영업외 vs 기타)
+    ("기타영업외수익", 60), ("기타영업외이익", 60),
+    ("기타영업외비용", 62), ("기타영업외손실", 62),
+    ("영업외수익", 65),
+    ("영업외비용", 66),
+    ("영업외손익", 67),
+    ("기타수익", 68), ("기타이익", 68),
+    ("기타비용", 69), ("기타손실", 69),
+    # 금융
+    ("금융수익", 70), ("이자수익", 71),
+    ("금융원가", 75), ("금융비용", 75), ("이자비용", 76),
+    # 지분법
+    ("지분법이익", 80), ("지분법손익", 80), ("지분법손실", 81),
+    # 법인세 차감전
+    ("법인세비용및차감전", 85), ("법인세비용차감전", 85),
+    ("법인세차감전", 86), ("차감전순이익", 87), ("차감전순손익", 87),
+    # 법인세
+    ("법인세비용", 90), ("법인세수익", 90),
     ("계속영업", 92), ("중단영업", 93),
-    ("당기순이익", 100), ("당기순손실", 101), ("분기순이익", 102), ("반기순이익", 103),
+    # 순이익
+    ("당기순이익", 100), ("당기순손실", 101), ("당기순손익", 100),
+    ("분기순이익", 102), ("반기순이익", 103),
+    ("분기순손익", 102), ("반기순손익", 103),
+    # 포괄손익
     ("기타포괄손익", 110),
-    ("총포괄손익", 120),
-    ("주당이익", 130), ("기본주당", 131), ("희석주당", 132),
+    ("총포괄손익", 120), ("포괄손익", 121),
+    # 주당이익
+    ("기본및희석주당", 130), ("기본주당", 131), ("희석주당", 132),
+    ("우선주기본주당", 133), ("우선주희석주당", 134),
+    ("보통주기본주당", 135), ("보통주희석주당", 136),
+    ("우선주주당", 137), ("보통주주당", 138),
+    ("주당이익", 139),
+    # 귀속
+    ("지배기업의소유주에게귀속", 140), ("지배기업소유주", 141),
+    ("비지배지분에귀속", 145), ("비지배지분", 146),
+    # 비용의 성격별 분류 (IS 하단 주석 — 맨 아래로)
+    ("재료비", 200), ("종업원급여", 201), ("노무비", 202),
+    ("인건비", 203), ("용역비", 204), ("광고선전비", 205),
 ]
 
 _BS_CANONICAL = [
     ("유동자산", 10),
-    ("현금", 11), ("단기금융", 12), ("매출채권", 13), ("재고", 14),
+    ("현금및현금성", 11), ("현금", 12), ("단기금융", 13),
+    ("매출채권", 14), ("기타채권", 15),
+    ("재고", 16), ("당기법인세", 17),
     ("비유동자산", 20),
-    ("유형자산", 21), ("무형자산", 22), ("투자부동산", 23), ("사용권", 24),
+    ("유형자산", 21), ("무형자산", 22), ("투자부동산", 23),
+    ("사용권", 24), ("장기기타채권", 25),
     ("자산총계", 50),
-    ("유동부채", 60), ("매입채무", 61), ("단기차입", 62),
+    ("유동부채", 60), ("매입채무", 61), ("단기차입", 62), ("유동사채", 63),
     ("비유동부채", 70), ("장기차입", 71), ("사채", 72),
+    ("이연법인세부채", 73),
     ("부채총계", 90),
     ("자본금", 100), ("자본잉여", 101), ("이익잉여", 102), ("기타자본", 103),
-    ("지배기업", 110), ("비지배지분", 111),
+    ("지배기업의소유주에게귀속", 110), ("지배기업소유주", 111),
+    ("비지배지분", 120),
     ("자본총계", 130),
 ]
 
@@ -679,10 +714,36 @@ _CF_CANONICAL = [
     ("영업활동", 10),
     ("투자활동", 20),
     ("재무활동", 30),
-    ("현금의증가", 40), ("현금의감소", 41),
+    ("현금및현금성자산의증가", 40), ("현금의증가", 40), ("현금의감소", 41),
     ("기초현금", 50),
     ("기말현금", 60),
 ]
+
+
+# 서브토탈 ↔ 구성요소 규칙. 구성요소는 `_norm_nm()` 기준 키.
+# 예: `매출총이익 = 매출액 - 매출원가`. 마이너스는 `-` 접두.
+SUBTOTAL_RULES: Dict[str, List[tuple]] = {
+    "BS": [
+        # (서브토탈키, [구성요소키들], tol_pct)
+        ("자산총계", ["유동자산", "비유동자산"], 0.01),
+        ("부채총계", ["유동부채", "비유동부채"], 0.01),
+    ],
+    "IS": [
+        ("매출총이익", ["매출액", "-매출원가"], 0.02),
+        ("매출총손익", ["매출액", "-매출원가"], 0.02),
+    ],
+    "CIS": [
+        ("총포괄손익", ["당기순이익", "기타포괄손익"], 0.05),
+    ],
+}
+
+
+def _paren_norm(s: str) -> str:
+    """_norm_nm 과 동일 로직 (모듈 레벨 함수 — SUBTOTAL_RULES 키 매칭용)."""
+    t = (s or "").strip()
+    t = _re.sub(r"\([^)]*\)", "", t)
+    t = _re.sub(r"[ㆍ·•\s\u3000]+", "", t)
+    return t
 
 
 def _canonical_ord(sj: str, name: str) -> int:
@@ -721,8 +782,16 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
     meta: Dict[tuple, Dict[str, Any]] = {}
     years_seen: set = set()
 
+    # 정규화: 공백·괄호 내용·접미 `(손실)`·`(이익)`·`(-)`·ㆍ·· 제거
+    # → `매출총이익(손실)` / `매출총이익` / `매출총손실` 같은 변형을 하나로 병합
+    _paren_re = _re.compile(r"\([^)]*\)")
+    _punct_re = _re.compile(r"[ㆍ·•\s\u3000]+")
+
     def _norm_nm(s: str) -> str:
-        return (s or "").replace(" ", "").replace("\u3000", "").strip()
+        t = (s or "").strip()
+        t = _paren_re.sub("", t)           # 괄호와 내용 통째로 제거
+        t = _punct_re.sub("", t)           # 공백·중점 제거
+        return t
 
     # 최신 연도의 ord 를 우선 채택하기 위해 call_year 가 큰 것부터 처리
     sorted_rows = sorted(
@@ -803,6 +872,10 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
         right=Side(style="thin", color="BDBDBD"),
     )
 
+    # 각 계정의 시트 row 번호 추적 — 체커 수식에서 참조용
+    # key = (sj, _norm_nm(display_nm)) → row_index
+    row_of: Dict[tuple, int] = {}
+
     r = hdr_row + 1
     for sj in SJ_ORDER:
         sj_keys = [k for k in pivot if k[0] == sj]
@@ -831,7 +904,6 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
             display_nm = m.get("display_nm", key[1])
             is_sub = _is_subtotal(display_nm)
             is_section = _is_section_header(display_nm)
-            # 들여쓰기: 서브토탈/섹션은 들여쓰기 0, 일반은 1
             indent_val = 0 if (is_sub or is_section) else 1
 
             # 계정명 셀
@@ -874,7 +946,15 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
                 for ci in range(len(hdr_labels)):
                     ws.cell(row=r, column=C + ci).border = THIN_BORDER
 
+            # row 추적 (체커용)
+            row_of[(sj, _paren_norm(display_nm))] = r
             r += 1
+
+        # 섹션 끝 — 이 섹션의 서브토탈 검증 행 삽입
+        added = _insert_subtotal_checkers(
+            ws, sj, row_of, r, years, C, hdr_labels,
+        )
+        r += added
         r += 1  # 섹션 간 빈 행
 
     # 열 너비
@@ -882,6 +962,84 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
     for yi in range(len(years)):
         ws.column_dimensions[get_column_letter(C + 1 + yi)].width = 20
     ws.freeze_panes = ws.cell(row=hdr_row + 1, column=C + 1).coordinate
+
+
+def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
+                              start_row: int, years: List[int], C: int,
+                              hdr_labels: List[str]) -> int:
+    """해당 sj (BS/IS/CIS) 의 서브토탈 규칙 검증 행을 삽입.
+
+    반환: 삽입한 행 수.
+    """
+    rules = SUBTOTAL_RULES.get(sj, [])
+    if not rules:
+        return 0
+    n_added = 0
+    check_fill_ok = PatternFill("solid", fgColor="E8F5E9")     # 녹색
+    check_fill_warn = PatternFill("solid", fgColor="FFF3E0")   # 주황
+    check_font = Font(italic=True, color="37474F", name="Calibri", size=10)
+
+    for sub_key, comps, tol_pct in rules:
+        sub_row = row_of.get((sj, sub_key))
+        if sub_row is None:
+            continue
+        # 모든 구성요소가 시트에 존재하는지 확인
+        comp_rows: List[tuple[int, int]] = []  # (sign, row)
+        all_present = True
+        for c in comps:
+            sign = -1 if c.startswith("-") else 1
+            ck = c.lstrip("-")
+            rw = row_of.get((sj, ck))
+            if rw is None:
+                all_present = False
+                break
+            comp_rows.append((sign, rw))
+        if not all_present:
+            continue
+
+        r = start_row + n_added
+        # 설명 셀
+        desc_cell = ws.cell(
+            row=r, column=C,
+            value=f"  └ 검증: {comps[0]} "
+                  + " ".join(f"{'-' if s < 0 else '+'} {c.lstrip('-')}"
+                             for (s, _), c in zip(comp_rows[1:], comps[1:])),
+        )
+        desc_cell.font = check_font
+        desc_cell.alignment = Alignment(
+            horizontal="left", vertical="center", indent=2,
+        )
+
+        # 연도별 수식
+        for yi in range(len(years)):
+            col = C + 1 + yi
+            sub_ref = ws.cell(row=sub_row, column=col).coordinate
+            # 구성요소 합산 수식
+            expr = "+".join(
+                f"{'-' if s < 0 else ''}{ws.cell(row=rw, column=col).coordinate}"
+                for s, rw in comp_rows
+            )
+            if expr.startswith("-"):
+                expr = "(0" + expr + ")"
+            # tol = MAX(ABS(sub)*tol_pct, 1e6)
+            formula = (
+                f'=IF(AND(ISNUMBER({sub_ref}),ISNUMBER({expr.replace(chr(40), "").replace(chr(41), "")})),'
+                f'IF(ABS({sub_ref}-({expr}))<=MAX(ABS({sub_ref})*{tol_pct},1000000),'
+                f'"✓",'
+                f'"⚠ diff="&TEXT({sub_ref}-({expr}),"#,##0")),'
+                f'"")'
+            )
+            cell = ws.cell(row=r, column=col, value=formula)
+            cell.font = check_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            # conditional color (기본은 주황 — 실제 결과는 excel 재계산 시 결정됨)
+            cell.fill = check_fill_ok
+        # 마지막 열까지 border 연장
+        for ci in range(len(hdr_labels)):
+            ws.cell(row=r, column=C + ci).border = THIN_BORDER
+        n_added += 1
+
+    return n_added
 
 
 def _write_raw_fs(wb: Workbook, fin: FinancialsBundle) -> None:

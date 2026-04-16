@@ -50,17 +50,52 @@ class Disclosure:
 
 
 # ── 목록 조회 ────────────────────────────────────────────────────────────
+def _infer_pblntf_ty_from_report_nm(report_nm: str) -> str:
+    """DART API 가 pblntf_ty 를 빈 문자열로 반환하는 케이스 대응.
+
+    report_nm 에서 공시유형 prefix 를 추론해 A/B/D/F 중 하나 반환.
+    매칭 안 되면 빈 문자열 (중요공시 아님).
+    """
+    nm = (report_nm or "").replace(" ", "")
+    # 정기공시 (A)
+    if any(k in nm for k in ("사업보고서", "반기보고서", "분기보고서")):
+        return "A"
+    # 외부감사 (F) — 감사보고서는 비상장사에서 주력
+    if "감사보고서" in nm:
+        return "F"
+    # 지분공시 (D)
+    if any(k in nm for k in (
+        "주식등의대량보유", "임원·주요주주특정증권",
+        "임원ㆍ주요주주특정증권", "최대주주변경",
+        "최대주주등소유주식변동",
+    )):
+        return "D"
+    # 주요사항 (B) — 유상증자·전환사채·합병·분할·감자·자사주·매각·취득 등
+    if any(k in nm for k in (
+        "주요사항보고서", "유상증자", "무상증자", "전환사채", "신주인수권부사채",
+        "합병", "분할", "감자결정", "자기주식", "매각결정", "영업양도",
+        "영업양수", "타법인주식", "해산", "회생", "파산",
+    )):
+        return "B"
+    return ""
+
+
 def fetch_list(corp_code: str, bgn_de: str, end_de: str) -> List[Disclosure]:
     rows = api.iter_all_disclosures(corp_code, bgn_de, end_de)
     out: List[Disclosure] = []
     for r in rows:
+        raw_ty = (r.get("pblntf_ty") or "").strip()
+        report_nm = r.get("report_nm", "")
+        # DART API 가 pblntf_ty 를 빈 문자열로 반환하는 케이스 → report_nm 에서 추론
+        if not raw_ty:
+            raw_ty = _infer_pblntf_ty_from_report_nm(report_nm)
         out.append(Disclosure(
             rcept_no=str(r.get("rcept_no", "")).strip(),
             rcept_dt=str(r.get("rcept_dt", "")).strip(),
             corp_name=r.get("corp_name", ""),
-            report_nm=r.get("report_nm", ""),
+            report_nm=report_nm,
             flr_nm=r.get("flr_nm", ""),
-            pblntf_ty=r.get("pblntf_ty", ""),
+            pblntf_ty=raw_ty,
             pblntf_detail_ty=r.get("pblntf_detail_ty", ""),
             rm=r.get("rm", ""),
         ))

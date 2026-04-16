@@ -78,6 +78,32 @@ BS_ACCOUNT_MAP: Dict[str, str] = {
     "자본총계":          "total_equity",
 }
 
+# account_nm 매칭 실패 시 fallback 으로 쓰는 account_id prefix 매핑.
+# 호텔신라 같은 서비스업은 매출원가/판관비 분리 안 되고 `영업비용` 만 있거나,
+# 회사 고유 account_nm 으로 공시해서 IS_ACCOUNT_MAP 으로 안 잡힘.
+IS_ID_PREFIXES = [
+    # (key, prefix_tuple) — 순서 중요 (더 구체적인 게 먼저)
+    ("revenue",          ("ifrs-full_Revenue", "dart_Revenue",
+                          "ifrs-full_RevenueFromContractsWithCustomers")),
+    ("cost_of_sales",    ("ifrs-full_CostOfSales",
+                          "ifrs-full_CostOfServices",
+                          "dart_CostOfSales", "dart_CostOfServices")),
+    ("gross_profit",     ("ifrs-full_GrossProfit", "dart_GrossProfit")),
+    ("sga",              ("ifrs-full_SellingGeneralAndAdministrativeExpense",
+                          "dart_SellingGeneralAndAdministrativeExpense")),
+    ("op_income",        ("ifrs-full_ProfitLossFromOperatingActivities",
+                          "dart_OperatingIncomeLoss",
+                          "ifrs-full_OperatingIncomeLoss")),
+    ("net_income",       ("ifrs-full_ProfitLoss", "dart_ProfitLoss",
+                          "ifrs-full_ComprehensiveIncome")),
+]
+
+BS_ID_PREFIXES = [
+    ("total_assets",      ("ifrs-full_Assets", "dart_Assets")),
+    ("total_liabilities", ("ifrs-full_Liabilities", "dart_Liabilities")),
+    ("total_equity",      ("ifrs-full_Equity", "dart_Equity")),
+]
+
 # ── CF/IS 에서 D&A 추출 ────────────────────────────────────────────────
 # [1] XBRL account_id 매칭 — 가장 신뢰성 높음
 # D&A 합계를 한 라인으로 제공하는 표준 ID (있으면 그대로 da 로 사용)
@@ -285,10 +311,21 @@ def _extract_year_values(
 
         if sj in ("IS", "CIS"):
             key = IS_ACCOUNT_MAP.get(nm)
+            if not key and aid:
+                # account_id prefix fallback (서비스업·비표준 account_nm 대응)
+                for k, prefixes in IS_ID_PREFIXES:
+                    if aid.startswith(prefixes):
+                        key = k
+                        break
             if key:
                 _set_first(out, key, v)
         elif sj == "BS":
             key = BS_ACCOUNT_MAP.get(nm)
+            if not key and aid:
+                for k, prefixes in BS_ID_PREFIXES:
+                    if aid.startswith(prefixes):
+                        key = k
+                        break
             if key:
                 _set_first(out, key, v)
 

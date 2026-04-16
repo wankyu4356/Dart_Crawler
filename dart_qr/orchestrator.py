@@ -497,6 +497,19 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
                 continue
             if "감사보고서" in (d.report_nm or ""):
                 llm_targets.append(d)
+    else:
+        # 상장사인데 중요공시 분류가 0건이면 (DART API 의 pblntf_ty 누락 케이스)
+        # 정기보고서 + 감사보고서를 수동으로 스캔해 fallback 으로 채움
+        if not llm_targets and discs:
+            log(f"  ⚠ 중요공시 분류 0건 — report_nm 기반 fallback 스캔")
+            for d in discs:
+                nm = (d.report_nm or "")
+                if any(k in nm for k in (
+                    "사업보고서", "반기보고서", "분기보고서",
+                    "감사보고서", "주요사항보고서",
+                )):
+                    llm_targets.append(d)
+            log(f"  → fallback 으로 {len(llm_targets)}건 확보")
 
     # 사용할 Claude 모델
     model_name = cfg.anthropic_model or __import__("dart_qr.config", fromlist=["ANTHROPIC_MODEL"]).ANTHROPIC_MODEL
@@ -698,24 +711,35 @@ def _audit_outputs(xlsx_path: str, html_path: str, fin, biz, exec_summary,
         issues.append({"type": "html_read_error",
                        "msg": f"HTML 재읽기 실패: {exc}"})
 
-    # 3) D&A 커버리지 — annual 중 da=None 인 연도 카운트
+    # 3) 재무 커버리지 체크 (확장)
     if fin.annual:
         missing_da = [y.year for y in fin.annual if y.values.get("da") is None]
         if missing_da:
-            issues.append({
-                "type": "missing_da",
-                "msg": f"D&A 누락 연도: {missing_da}",
-                "years": missing_da,
-            })
+            issues.append({"type": "missing_da",
+                           "msg": f"D&A 누락 연도: {missing_da}",
+                           "years": missing_da})
         missing_rev = [y.year for y in fin.annual if y.values.get("revenue") is None]
         if missing_rev:
-            issues.append({
-                "type": "missing_revenue",
-                "msg": f"매출액 누락 연도: {missing_rev}",
-                "years": missing_rev,
-            })
+            issues.append({"type": "missing_revenue",
+                           "msg": f"매출액 누락 연도: {missing_rev}",
+                           "years": missing_rev})
+        # 매출액은 있는데 매출원가·매출총이익 모두 None (서비스업 흔히)
+        missing_cos = [y.year for y in fin.annual
+                       if y.values.get("revenue") is not None
+                       and y.values.get("cost_of_sales") is None]
+        if missing_cos:
+            issues.append({"type": "missing_cost_of_sales",
+                           "msg": f"매출원가/영업비용 누락 연도: {missing_cos}",
+                           "years": missing_cos})
+        missing_gp = [y.year for y in fin.annual
+                      if y.values.get("revenue") is not None
+                      and y.values.get("gross_profit") is None]
+        if missing_gp:
+            issues.append({"type": "missing_gross_profit",
+                           "msg": f"매출총이익 누락 연도: {missing_gp}",
+                           "years": missing_gp})
 
-    # 4) Business Profile / Footnotes 완전 공란 여부 — 경고만 (자동수정 불가)
+    # 4) Business Profile / Footnotes 완전 공란 여부
     if biz is not None:
         has_content = any([
             (biz.get("business_summary") or "").strip(),
@@ -725,16 +749,26 @@ def _audit_outputs(xlsx_path: str, html_path: str, fin, biz, exec_summary,
         ])
         if not has_content:
             issues.append({"type": "biz_empty",
-                           "msg": "Business Profile 모든 섹션 비어있음"})
+                           "msg": "Business Profile 모든 섹션 비어있음 (LLM 응답 파싱 실패 의심)"})
 
-    # 5) LLM 에러 다수 발생 체크
+    # 5) LLM 실행/실패 상태 체크 (확장)
     err_count = sum(1 for d in discs if d.llm_status == "error")
     ok_count = sum(1 for d in discs if d.llm_status == "ok")
+    pending_count = sum(1 for d in discs if d.llm_status == "pending")
+    skipped_count = sum(1 for d in discs if d.llm_status == "skipped")
     if err_count > 0 and ok_count == 0:
+        issues.append({"type": "llm_all_failed",
+                       "msg": f"LLM 호출 전부 실패 ({err_count}건) — 인코딩/API 키/네트워크 의심"})
+    # 공시는 많은데 LLM 이 아예 안 돌았음 — 중요공시 분류 실패 가능성
+    if len(discs) >= 10 and ok_count == 0 and err_count == 0 and pending_count == len(discs):
         issues.append({
-            "type": "llm_all_failed",
-            "msg": f"LLM 호출 전부 실패 ({err_count}건) — 인코딩/API 키/네트워크 의심",
+            "type": "no_llm_targets",
+            "msg": (f"공시 {len(discs)}건인데 LLM 요약 실행 0건 — "
+                    f"pblntf_ty 분류 실패로 대상 선별 불가 의심"),
         })
+
+    # 5.5) 재무제표_상세 부분합 검증 — raw_rows 로 sanity check
+    issues.extend(_check_subtotal_violations(fin, log))
 
     # 6) Excel 파일 기본 무결성 (sheet 수)
     try:
@@ -751,6 +785,76 @@ def _audit_outputs(xlsx_path: str, html_path: str, fin, biz, exec_summary,
                        "msg": f"Excel 재읽기 실패: {exc}"})
 
     return issues
+
+
+def _check_subtotal_violations(fin, log: LogFn) -> List[Dict[str, Any]]:
+    """재무제표_상세 pivot 기반으로 서브토탈 = 구성요소 합 검증.
+
+    `매출총이익 = 매출액 - 매출원가`, `자산총계 = 유동자산 + 비유동자산` 등
+    전통적 수식이 연도별로 안 맞으면 경고 이슈 반환.
+    """
+    violations: List[Dict[str, Any]] = []
+    if not getattr(fin, "raw_rows", None):
+        return violations
+    from .excel_out import SUBTOTAL_RULES, _paren_norm
+
+    # pivot build (excel_out 과 동일 로직 — 병합 중복 제거)
+    pivot: Dict[tuple, Dict[int, float]] = {}
+    for r in fin.raw_rows:
+        sj = (r.get("sj_div") or "").upper()
+        anm = (r.get("account_nm") or "").strip()
+        if not anm or not isinstance(r.get("_call_year"), int):
+            continue
+        key = (sj, _paren_norm(anm))
+        call_year = r["_call_year"]
+        for period, yoff in [("thstrm", 0), ("frmtrm", 1), ("bfefrmtrm", 2)]:
+            year = call_year - yoff
+            raw_amt = r.get(f"{period}_amount")
+            try:
+                amt = float(str(raw_amt).replace(",", "")) if raw_amt not in (None, "", "-") else None
+            except (ValueError, TypeError):
+                amt = None
+            if amt is None:
+                continue
+            slot = pivot.setdefault(key, {})
+            if slot.get(year) is None or abs(amt) > abs(slot[year]):
+                slot[year] = amt
+
+    for sj, rules in SUBTOTAL_RULES.items():
+        for sub_key, comps, tol_pct in rules:
+            sub_vals = pivot.get((sj, sub_key))
+            if not sub_vals:
+                continue
+            comp_vals_by_sign: List[tuple[int, Dict[int, float]]] = []
+            missing_any = False
+            for c in comps:
+                sign = -1 if c.startswith("-") else 1
+                ck = c.lstrip("-")
+                v = pivot.get((sj, ck))
+                if v is None:
+                    missing_any = True
+                    break
+                comp_vals_by_sign.append((sign, v))
+            if missing_any:
+                continue
+            # 공통 연도만 검증
+            years = set(sub_vals.keys())
+            for _, cv in comp_vals_by_sign:
+                years &= set(cv.keys())
+            for year in sorted(years):
+                actual = sub_vals[year]
+                computed = sum(sign * cv[year] for sign, cv in comp_vals_by_sign)
+                tol = max(abs(actual) * tol_pct, 1_000_000.0)
+                diff = actual - computed
+                if abs(diff) > tol:
+                    violations.append({
+                        "type": "subtotal_mismatch",
+                        "msg": (f"{sj} {year} {sub_key}: actual={actual:,.0f} "
+                                f"vs 계산={computed:,.0f} "
+                                f"(diff={diff:,.0f}, tol={tol:,.0f})"),
+                        "sj": sj, "year": year, "sub": sub_key,
+                    })
+    return violations
 
 
 def _apply_output_fixes(issues, fin, biz, exec_summary, footnotes) -> None:

@@ -54,6 +54,13 @@ _OBJECT_RE = re.compile(r"\{[\s\S]*\}")
 
 
 def _parse_json(text: str) -> Optional[Dict[str, Any]]:
+    """LLM 응답에서 JSON 객체 추출. 실패 시 None.
+
+    다중 fallback:
+      1) ```json ... ``` 코드펜스
+      2) 본문에 직접 임베드된 {...} (greedy)
+      3) 마크다운 prose 안의 가장 긴 {...} 블록 (trailing comma 등 제거 시도)
+    """
     if not text:
         return None
     m = _CODEBLOCK_RE.search(text)
@@ -66,7 +73,12 @@ def _parse_json(text: str) -> Optional[Dict[str, Any]]:
     try:
         return json.loads(candidate)
     except json.JSONDecodeError:
-        return None
+        # trailing comma / python-style comments 등 관대한 복구 시도
+        try:
+            cleaned = re.sub(r",\s*([\]}])", r"\1", candidate)  # trailing comma 제거
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return None
 
 
 # ── Anthropic 클라이언트 ────────────────────────────────────────────────
@@ -545,10 +557,14 @@ def extract_footnotes_from_body(
     client=None,
     model: str = ANTHROPIC_MODEL,
     max_tokens: int = 3000,
-) -> dict:
-    """사업/감사보고서 본문 → 주요 주석 구조화 JSON. 실패 시 빈 dict."""
+    return_raw: bool = False,
+):
+    """사업/감사보고서 본문 → 주요 주석 구조화 JSON.
+
+    return_raw=True 이면 (parsed_or_empty, raw_str) 튜플 반환 (디버그용).
+    """
     if not body:
-        return {}
+        return ({}, "") if return_raw else {}
     client = client or get_client()
     try:
         resp = _safe_create(
@@ -567,8 +583,11 @@ def extract_footnotes_from_body(
         )
         raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
         parsed = _parse_json(raw)
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:  # noqa: BLE001
+        result = parsed if isinstance(parsed, dict) else {}
+        return (result, raw) if return_raw else result
+    except Exception as exc:  # noqa: BLE001
+        if return_raw:
+            return ({}, f"__EXCEPTION__ {type(exc).__name__}: {exc}")
         return {}
 
 
@@ -577,11 +596,15 @@ def extract_business_overview(
     client=None,
     model: str = ANTHROPIC_MODEL,
     max_tokens: int = 2500,
-) -> dict:
+    return_raw: bool = False,
+):
     """사업보고서 `II. 사업의 내용` 섹션 혹은 감사보고서 본문에서 비즈니스 정보
-    JSON dict 추출. 실패 시 빈 dict."""
+    JSON dict 추출.
+
+    return_raw=True 이면 (parsed_or_empty, raw_str) 튜플 반환.
+    """
     if not body:
-        return {}
+        return ({}, "") if return_raw else {}
     client = client or get_client()
     try:
         resp = _safe_create(
@@ -600,8 +623,11 @@ def extract_business_overview(
         )
         raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
         parsed = _parse_json(raw)
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:  # noqa: BLE001
+        result = parsed if isinstance(parsed, dict) else {}
+        return (result, raw) if return_raw else result
+    except Exception as exc:  # noqa: BLE001
+        if return_raw:
+            return ({}, f"__EXCEPTION__ {type(exc).__name__}: {exc}")
         return {}
 
 
