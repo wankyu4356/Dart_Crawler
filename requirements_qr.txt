@@ -1,6 +1,7 @@
 requests>=2.31
 openpyxl>=3.1
-# anthropic 0.95 이하 httpx 레이어에서 한글 ASCII 인코딩 크래시 → 최신 사용.
-anthropic>=0.98
-httpx>=0.28
+# anthropic SDK — 어떤 버전이든 한글 인코딩 크래시 발생 시 llm.py 의
+# _raw_http_call() fallback 이 자동 우회. 구버전 SDK 도 OK.
+anthropic>=0.68
+httpx>=0.27
 python-dotenv>=1.0
