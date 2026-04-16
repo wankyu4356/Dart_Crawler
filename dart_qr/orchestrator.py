@@ -820,30 +820,44 @@ def _check_subtotal_violations(fin, log: LogFn) -> List[Dict[str, Any]]:
             if slot.get(year) is None or abs(amt) > abs(slot[year]):
                 slot[year] = amt
 
+    def _resolve(sj: str, comp: str):
+        """alt (|) 분리, 부호 해석, pivot lookup. 없으면 None."""
+        for alt in comp.split("|"):
+            sign = -1 if alt.startswith("-") else 1
+            name = alt.lstrip("-")
+            v = pivot.get((sj, name))
+            if v is not None:
+                return (sign, v, name)
+        return None
+
+    applied_sigs: set = set()
     for sj, rules in SUBTOTAL_RULES.items():
         for sub_key, comps, tol_pct in rules:
             sub_vals = pivot.get((sj, sub_key))
             if not sub_vals:
                 continue
-            comp_vals_by_sign: List[tuple[int, Dict[int, float]]] = []
-            missing_any = False
+            resolved: List[tuple] = []
+            missing = False
             for c in comps:
-                sign = -1 if c.startswith("-") else 1
-                ck = c.lstrip("-")
-                v = pivot.get((sj, ck))
-                if v is None:
-                    missing_any = True
+                rv = _resolve(sj, c)
+                if rv is None:
+                    missing = True
                     break
-                comp_vals_by_sign.append((sign, v))
-            if missing_any:
+                resolved.append(rv)
+            if missing:
                 continue
+            sig = (sj, sub_key, tuple((s, tuple(sorted(v.items()))) for s, v, _ in resolved))
+            if sig in applied_sigs:
+                continue
+            applied_sigs.add(sig)
+
             # 공통 연도만 검증
             years = set(sub_vals.keys())
-            for _, cv in comp_vals_by_sign:
+            for _, cv, _ in resolved:
                 years &= set(cv.keys())
             for year in sorted(years):
                 actual = sub_vals[year]
-                computed = sum(sign * cv[year] for sign, cv in comp_vals_by_sign)
+                computed = sum(sign * cv[year] for sign, cv, _ in resolved)
                 tol = max(abs(actual) * tol_pct, 1_000_000.0)
                 diff = actual - computed
                 if abs(diff) > tol:

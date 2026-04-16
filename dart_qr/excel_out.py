@@ -720,20 +720,91 @@ _CF_CANONICAL = [
 ]
 
 
-# 서브토탈 ↔ 구성요소 규칙. 구성요소는 `_norm_nm()` 기준 키.
-# 예: `매출총이익 = 매출액 - 매출원가`. 마이너스는 `-` 접두.
+# 서브토탈 ↔ 구성요소 규칙. 구성요소는 `_paren_norm()` 기준 키.
+# 구성요소에 `|` 를 쓰면 alternation (먼저 매치되는 쪽 사용):
+#   `매출액|영업수익` → 매출액 있으면 쓰고, 없으면 영업수익 사용
+# `-` 접두는 뺄셈.
+# 같은 서브토탈에 여러 규칙을 등록 가능 — 조건 만족하는 규칙만 검증 행 추가.
 SUBTOTAL_RULES: Dict[str, List[tuple]] = {
     "BS": [
-        # (서브토탈키, [구성요소키들], tol_pct)
+        # 자산·부채·자본 3대 총계
         ("자산총계", ["유동자산", "비유동자산"], 0.01),
         ("부채총계", ["유동부채", "비유동부채"], 0.01),
+        # 자본총계 breakdown — 지배 + 비지배 지분
+        ("자본총계", [
+            "지배기업의소유주에게귀속되는자본"
+            "|지배기업소유주에게귀속되는자본"
+            "|지배기업소유주지분"
+            "|지배회사소유주지분",
+            "비지배지분",
+        ], 0.02),
+        # 대차 검증 (Accounting Identity): 자산 = 부채 + 자본
+        ("자산총계", ["부채총계", "자본총계"], 0.005),
     ],
     "IS": [
-        ("매출총이익", ["매출액", "-매출원가"], 0.02),
-        ("매출총손익", ["매출액", "-매출원가"], 0.02),
+        # 매출총이익 = 매출액 - 매출원가
+        ("매출총이익", ["매출액|영업수익|수익", "-매출원가|-용역원가"], 0.02),
+        ("매출총손익", ["매출액|영업수익|수익", "-매출원가|-용역원가"], 0.02),
+        # 영업이익 — 일반 제조업: 매출총이익 - 판관비
+        ("영업이익", ["매출총이익|매출총손익", "-판매비와관리비|-판매비및관리비"], 0.03),
+        ("영업손익", ["매출총이익|매출총손익", "-판매비와관리비|-판매비및관리비"], 0.03),
+        # 영업이익 — 서비스업/단일 영업비용: 매출 - 영업비용
+        ("영업이익", ["매출액|영업수익|수익", "-영업비용"], 0.03),
+        ("영업손익", ["매출액|영업수익|수익", "-영업비용"], 0.03),
+        # 법인세비용차감전순이익 = 영업이익 + 금융수익 - 금융비용 + 기타수익 - 기타비용
+        # (모든 구성요소 있을 때만 검증 — 가장 흔한 레이아웃)
+        ("법인세비용차감전순이익", [
+            "영업이익|영업손익",
+            "금융수익", "-금융비용|-금융원가",
+        ], 0.05),
+        ("법인세비용및차감전순이익", [
+            "영업이익|영업손익",
+            "금융수익", "-금융비용|-금융원가",
+        ], 0.05),
+        # 당기순이익 = 법인세차감전순이익 - 법인세비용
+        ("당기순이익", [
+            "법인세비용차감전순이익|법인세비용및차감전순이익|차감전순이익",
+            "-법인세비용",
+        ], 0.03),
+        ("당기순손익", [
+            "법인세비용차감전순이익|법인세비용및차감전순이익|차감전순이익",
+            "-법인세비용",
+        ], 0.03),
+        # 당기순이익 귀속 breakdown
+        ("당기순이익", [
+            "지배기업의소유주에게귀속되는당기순이익"
+            "|지배기업소유주에게귀속되는당기순이익"
+            "|지배기업소유주지분",
+            "비지배지분에귀속되는당기순이익|비지배지분",
+        ], 0.03),
     ],
     "CIS": [
-        ("총포괄손익", ["당기순이익", "기타포괄손익"], 0.05),
+        # 총포괄손익 = 당기순이익 + 기타포괄손익
+        ("총포괄손익", ["당기순이익|당기순손익", "기타포괄손익"], 0.05),
+        # 총포괄손익 귀속 breakdown
+        ("총포괄손익", [
+            "지배기업의소유주에게귀속되는총포괄손익"
+            "|지배기업소유주에게귀속되는총포괄손익",
+            "비지배지분에귀속되는총포괄손익|비지배지분",
+        ], 0.05),
+    ],
+    "CF": [
+        # 현금및현금성자산의증가(감소) = 영업 + 투자 + 재무
+        ("현금및현금성자산의증가", [
+            "영업활동현금흐름|영업활동으로인한현금흐름",
+            "투자활동현금흐름|투자활동으로인한현금흐름",
+            "재무활동현금흐름|재무활동으로인한현금흐름",
+        ], 0.03),
+        ("현금의증가", [
+            "영업활동현금흐름|영업활동으로인한현금흐름",
+            "투자활동현금흐름|투자활동으로인한현금흐름",
+            "재무활동현금흐름|재무활동으로인한현금흐름",
+        ], 0.03),
+        # 기말현금 = 기초현금 + 증감
+        ("기말의현금및현금성자산", [
+            "기초의현금및현금성자산|기초현금및현금성자산",
+            "현금및현금성자산의증가|현금의증가",
+        ], 0.02),
     ],
 }
 
@@ -964,10 +1035,30 @@ def _write_fin_detail(wb: Workbook, fin: FinancialsBundle) -> None:
     ws.freeze_panes = ws.cell(row=hdr_row + 1, column=C + 1).coordinate
 
 
+def _resolve_alt(row_of: Dict[tuple, int], sj: str, comp: str
+                 ) -> Optional[tuple]:
+    """`매출액|영업수익` 같은 alternation 에서 가장 먼저 매치되는 (sign, row, label) 반환.
+
+    `-매출원가|-용역원가` 같은 case 도 각 alt 에 `-` 유무 독립 해석.
+    아무것도 매치 안 되면 None.
+    """
+    alts = comp.split("|")
+    for alt in alts:
+        sign = -1 if alt.startswith("-") else 1
+        name = alt.lstrip("-")
+        rw = row_of.get((sj, name))
+        if rw is not None:
+            return (sign, rw, name)
+    return None
+
+
 def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
                               start_row: int, years: List[int], C: int,
                               hdr_labels: List[str]) -> int:
-    """해당 sj (BS/IS/CIS) 의 서브토탈 규칙 검증 행을 삽입.
+    """해당 sj (BS/IS/CIS/CF) 의 서브토탈 규칙 검증 행을 삽입.
+
+    한 sub_key 에 여러 규칙이 등록돼 있으면 **모든 구성요소가 존재하는 첫 번째**
+    규칙만 적용 (중복 검증 행 방지).
 
     반환: 삽입한 행 수.
     """
@@ -975,36 +1066,40 @@ def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
     if not rules:
         return 0
     n_added = 0
-    check_fill_ok = PatternFill("solid", fgColor="E8F5E9")     # 녹색
-    check_fill_warn = PatternFill("solid", fgColor="FFF3E0")   # 주황
+    check_fill_ok = PatternFill("solid", fgColor="E8F5E9")  # 연녹색
     check_font = Font(italic=True, color="37474F", name="Calibri", size=10)
+
+    # 이미 체커 붙인 (sub_key, comp_signature) 중복 제거용
+    applied_subs: set = set()
 
     for sub_key, comps, tol_pct in rules:
         sub_row = row_of.get((sj, sub_key))
         if sub_row is None:
             continue
-        # 모든 구성요소가 시트에 존재하는지 확인
-        comp_rows: List[tuple[int, int]] = []  # (sign, row)
+        # 각 component 를 resolve (alt 우선순위 적용)
+        resolved: List[tuple] = []  # [(sign, row, label), ...]
         all_present = True
         for c in comps:
-            sign = -1 if c.startswith("-") else 1
-            ck = c.lstrip("-")
-            rw = row_of.get((sj, ck))
-            if rw is None:
+            rv = _resolve_alt(row_of, sj, c)
+            if rv is None:
                 all_present = False
                 break
-            comp_rows.append((sign, rw))
+            resolved.append(rv)
         if not all_present:
             continue
 
+        sig = (sub_key, tuple((s, rw) for s, rw, _ in resolved))
+        if sig in applied_subs:
+            continue
+        applied_subs.add(sig)
+
         r = start_row + n_added
-        # 설명 셀
-        desc_cell = ws.cell(
-            row=r, column=C,
-            value=f"  └ 검증: {comps[0]} "
-                  + " ".join(f"{'-' if s < 0 else '+'} {c.lstrip('-')}"
-                             for (s, _), c in zip(comp_rows[1:], comps[1:])),
-        )
+        # 설명 셀 — 실제 매치된 라벨 사용
+        first_sign, _, first_label = resolved[0]
+        desc = f"  └ 검증: {'-' if first_sign < 0 else ''}{first_label}"
+        for sign, _, label in resolved[1:]:
+            desc += f" {'-' if sign < 0 else '+'} {label}"
+        desc_cell = ws.cell(row=r, column=C, value=desc)
         desc_cell.font = check_font
         desc_cell.alignment = Alignment(
             horizontal="left", vertical="center", indent=2,
@@ -1015,26 +1110,25 @@ def _insert_subtotal_checkers(ws, sj: str, row_of: Dict[tuple, int],
             col = C + 1 + yi
             sub_ref = ws.cell(row=sub_row, column=col).coordinate
             # 구성요소 합산 수식
-            expr = "+".join(
-                f"{'-' if s < 0 else ''}{ws.cell(row=rw, column=col).coordinate}"
-                for s, rw in comp_rows
-            )
-            if expr.startswith("-"):
-                expr = "(0" + expr + ")"
-            # tol = MAX(ABS(sub)*tol_pct, 1e6)
+            parts = []
+            for sign, rw, _ in resolved:
+                ref = ws.cell(row=rw, column=col).coordinate
+                parts.append(f"{'-' if sign < 0 else '+'}{ref}")
+            expr_sum = "".join(parts).lstrip("+")   # 첫 +만 제거
+            tol = max(1_000_000, int(abs(tol_pct) * 1e12))  # display fallback
             formula = (
-                f'=IF(AND(ISNUMBER({sub_ref}),ISNUMBER({expr.replace(chr(40), "").replace(chr(41), "")})),'
-                f'IF(ABS({sub_ref}-({expr}))<=MAX(ABS({sub_ref})*{tol_pct},1000000),'
+                f'=IF(AND(ISNUMBER({sub_ref}),'
+                f'COUNT({",".join(ws.cell(row=rw, column=col).coordinate for _, rw, _ in resolved)})={len(resolved)}),'
+                f'IF(ABS({sub_ref}-({expr_sum}))<=MAX(ABS({sub_ref})*{tol_pct},1000000),'
                 f'"✓",'
-                f'"⚠ diff="&TEXT({sub_ref}-({expr}),"#,##0")),'
+                f'"⚠ diff="&TEXT({sub_ref}-({expr_sum}),"#,##0")),'
                 f'"")'
             )
             cell = ws.cell(row=r, column=col, value=formula)
             cell.font = check_font
             cell.alignment = Alignment(horizontal="center", vertical="center")
-            # conditional color (기본은 주황 — 실제 결과는 excel 재계산 시 결정됨)
             cell.fill = check_fill_ok
-        # 마지막 열까지 border 연장
+
         for ci in range(len(hdr_labels)):
             ws.cell(row=r, column=C + ci).border = THIN_BORDER
         n_added += 1
