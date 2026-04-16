@@ -156,7 +156,7 @@ class App(tk.Tk):
         self.cmb_company.bind("<KeyRelease>", self._on_company_key)
 
         # 기간 + 재무연수 (row 1)
-        ttk.Label(core, text="기간", style="Field.TLabel").grid(
+        ttk.Label(core, text="공시 조회", style="Field.TLabel").grid(
             row=1, column=0, sticky="w", padx=(0, 8))
         self.var_period = tk.IntVar(value=3)
         ttk.Spinbox(core, from_=1, to=120, width=5,
@@ -169,7 +169,7 @@ class App(tk.Tk):
         self.var_years = tk.IntVar(value=4)
         ttk.Spinbox(core, from_=1, to=10, width=5,
                     textvariable=self.var_years).grid(row=1, column=4, sticky="w")
-        ttk.Label(core, text="년", style="Field.TLabel").grid(
+        ttk.Label(core, text="년치", style="Field.TLabel").grid(
             row=1, column=5, sticky="w")
 
         core.grid_columnconfigure(1, weight=1)
@@ -197,7 +197,7 @@ class App(tk.Tk):
         left = ttk.Labelframe(inner, text=" 출력 ", style="Card.TLabelframe")
         left.pack(side="left", fill="both", expand=True, padx=(0, 6))
 
-        ttk.Label(left, text="폴더", style="Field.TLabel").grid(
+        ttk.Label(left, text="저장 폴더", style="Field.TLabel").grid(
             row=0, column=0, sticky="w", padx=2, pady=2)
         self.var_outdir = tk.StringVar(value=os.path.expanduser("~/Desktop"))
         ttk.Entry(left, textvariable=self.var_outdir, width=28).grid(
@@ -205,7 +205,7 @@ class App(tk.Tk):
         ttk.Button(left, text="…", style="Ghost.TButton",
                    command=self._browse, width=3).grid(row=0, column=2, padx=2)
         self.var_save_log = tk.BooleanVar(value=True)
-        ttk.Checkbutton(left, text="로그 파일 저장",
+        ttk.Checkbutton(left, text="디버그 로그 파일 저장",
                         variable=self.var_save_log).grid(
             row=1, column=0, columnspan=3, sticky="w", padx=2, pady=(4, 0))
         left.grid_columnconfigure(1, weight=1)
@@ -220,24 +220,24 @@ class App(tk.Tk):
         self.var_footnotes = tk.BooleanVar(value=True)
         self.var_da_llm = tk.BooleanVar(value=True)
 
-        ttk.Checkbutton(right, text="공시 요약·시사점",
+        ttk.Checkbutton(right, text="공시별 요약·시사점",
                         variable=self.var_summarize).grid(
             row=0, column=0, sticky="w", padx=2)
-        ttk.Checkbutton(right, text="Executive Summary",
+        ttk.Checkbutton(right, text="종합 경영진 요약",
                         variable=self.var_exec_summary).grid(
             row=0, column=1, sticky="w", padx=2)
-        ttk.Checkbutton(right, text="Business Profile",
+        ttk.Checkbutton(right, text="회사 개요·사업구조",
                         variable=self.var_biz_profile).grid(
             row=1, column=0, sticky="w", padx=2)
-        ttk.Checkbutton(right, text="Footnotes",
+        ttk.Checkbutton(right, text="주석 요약 정리",
                         variable=self.var_footnotes).grid(
             row=1, column=1, sticky="w", padx=2)
-        ttk.Checkbutton(right, text="D&A LLM 보강",
+        ttk.Checkbutton(right, text="D&A 자동 보강",
                         variable=self.var_da_llm).grid(
             row=2, column=0, sticky="w", padx=2, pady=(0, 4))
 
-        # 모델 + API Key (row 3-4)
-        ttk.Label(right, text="모델", style="Field.TLabel").grid(
+        # 모델 + 분석 건수 (row 3)
+        ttk.Label(right, text="AI 모델", style="Field.TLabel").grid(
             row=3, column=0, sticky="w", padx=2, pady=2)
         self.var_model = tk.StringVar(value=cfgmod.ANTHROPIC_MODEL)
         self.var_limit = tk.IntVar(value=20)
@@ -246,15 +246,25 @@ class App(tk.Tk):
         ttk.Combobox(model_row, textvariable=self.var_model,
                      values=cfgmod.AVAILABLE_MODELS,
                      width=20, state="readonly").pack(side="left")
-        ttk.Label(model_row, text=" max:", style="Field.TLabel").pack(side="left", padx=(8,2))
+        ttk.Label(model_row, text=" 공시 분석 상한:",
+                  style="Field.TLabel").pack(side="left", padx=(8, 2))
         ttk.Spinbox(model_row, from_=1, to=200, width=4,
                     textvariable=self.var_limit).pack(side="left")
+        ttk.Label(model_row, text="건", style="Field.TLabel").pack(side="left")
 
-        ttk.Label(right, text="API Key", style="Field.TLabel").grid(
+        # API Key (row 4) — 파일 자동 로드 지원
+        key_label = "API Key"
+        if cfgmod.ANTHROPIC_API_KEY:
+            key_label = "API Key ✓"  # 파일/환경변수에서 로드됨
+        ttk.Label(right, text=key_label, style="Field.TLabel").grid(
             row=4, column=0, sticky="w", padx=2, pady=2)
         self.var_key = tk.StringVar(value=cfgmod.ANTHROPIC_API_KEY)
         ttk.Entry(right, textvariable=self.var_key, show="•", width=32).grid(
             row=4, column=1, sticky="we", padx=2)
+        # 힌트: api_key.txt 파일 자동 로드 안내
+        ttk.Label(right, text="직접 입력 또는 exe 폴더에 api_key.txt 파일 자동 인식",
+                  style="Field.TLabel").grid(
+            row=5, column=0, columnspan=2, sticky="w", padx=2, pady=(0, 2))
 
         right.grid_columnconfigure(1, weight=1)
 

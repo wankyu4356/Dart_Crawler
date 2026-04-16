@@ -12,7 +12,27 @@ DART_API_KEY: str = os.getenv(
 DART_BASE_URL: str = "https://opendart.fss.or.kr/api"
 
 # ── Anthropic ────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+# API Key 우선순위: 1) 환경변수 → 2) exe 옆 api_key.txt 파일 → 3) 빈 문자열
+def _load_api_key_from_file() -> str:
+    """exe 또는 스크립트와 같은 폴더에 api_key.txt 가 있으면 첫 줄 반환."""
+    import sys
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.getcwd()
+    for name in ("api_key.txt", "anthropic_api_key.txt"):
+        p = os.path.join(base, name)
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    key = f.readline().strip()
+                if key:
+                    return key
+            except Exception:
+                pass
+    return ""
+
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "") or _load_api_key_from_file()
 # 기본 모델. Haiku 는 비용/속도 우선, Sonnet/Opus 는 품질 우선.
 ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
