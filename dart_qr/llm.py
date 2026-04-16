@@ -111,7 +111,8 @@ def summarize_disclosure(
         body=disc.body,
     )
     try:
-        resp = client.messages.create(
+        resp = _safe_create(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=[{
@@ -219,7 +220,8 @@ def build_executive_summary(
         f"분석된 공시 이슈 모음:\n{body}"
     )
     try:
-        resp = client.messages.create(
+        resp = _safe_create(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=[{
@@ -313,7 +315,8 @@ def extract_financials_from_audit(
         return []
     client = client or get_client()
     try:
-        resp = client.messages.create(
+        resp = _safe_create(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=[{
@@ -420,6 +423,43 @@ amort = 무형자산 상각비.
 D&A 합계 라인("감가상각 및 무형자산상각비")만 있으면 dep 에 합계, amort null."""
 
 
+def _clean_utf8(s: str) -> str:
+    """문자열을 UTF-8 round-trip 으로 정규화.
+
+    PyInstaller --windowed + 한글 Windows 환경에서 Anthropic SDK 내부
+    인코딩 경로가 일부 문자에 대해 ASCII 로 fallback 하는 경우 대비.
+    surrogate / invalid bytes 도 여기서 제거.
+    """
+    if not isinstance(s, str):
+        return s
+    try:
+        return s.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    except Exception:
+        return s
+
+
+def _safe_create(client, **kwargs):
+    """client.messages.create() 호출 전 모든 문자열 인자를 UTF-8 clean."""
+    sys_blk = kwargs.get("system")
+    if isinstance(sys_blk, list):
+        for b in sys_blk:
+            if isinstance(b, dict) and isinstance(b.get("text"), str):
+                b["text"] = _clean_utf8(b["text"])
+    elif isinstance(sys_blk, str):
+        kwargs["system"] = _clean_utf8(sys_blk)
+    msgs = kwargs.get("messages")
+    if isinstance(msgs, list):
+        for m in msgs:
+            c = m.get("content") if isinstance(m, dict) else None
+            if isinstance(c, str):
+                m["content"] = _clean_utf8(c)
+            elif isinstance(c, list):
+                for blk in c:
+                    if isinstance(blk, dict) and isinstance(blk.get("text"), str):
+                        blk["text"] = _clean_utf8(blk["text"])
+    return client.messages.create(**kwargs)
+
+
 def extract_da_from_body(
     body: str,
     client=None,
@@ -432,18 +472,21 @@ def extract_da_from_body(
     if not body:
         return ([], "") if return_raw else []
     client = client or get_client()
+    # UTF-8 clean round-trip 으로 ASCII fallback 경로 차단
+    body = _clean_utf8(body)
     try:
-        resp = client.messages.create(
+        resp = _safe_create(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=[{
                 "type": "text",
-                "text": DA_SYSTEM,
+                "text": _clean_utf8(DA_SYSTEM),
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{
                 "role": "user",
-                "content": f"본문(발췌):\n\n{body}",
+                "content": _clean_utf8(f"본문(발췌):\n\n{body}"),
             }],
         )
         raw = "\n".join(getattr(b, "text", "") for b in resp.content).strip()
@@ -508,7 +551,8 @@ def extract_footnotes_from_body(
         return {}
     client = client or get_client()
     try:
-        resp = client.messages.create(
+        resp = _safe_create(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=[{
@@ -540,7 +584,8 @@ def extract_business_overview(
         return {}
     client = client or get_client()
     try:
-        resp = client.messages.create(
+        resp = _safe_create(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=[{
@@ -571,7 +616,8 @@ def extract_governance_from_audit(
         return {}
     client = client or get_client()
     try:
-        resp = client.messages.create(
+        resp = _safe_create(
+            client,
             model=model,
             max_tokens=max_tokens,
             system=[{

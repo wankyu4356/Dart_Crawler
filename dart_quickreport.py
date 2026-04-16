@@ -19,8 +19,11 @@ import sys
 #   • sys.stdout / sys.stderr 가 **None** (콘솔 자체가 없음)
 #   • 또는 인코딩이 ASCII 로 fallback
 # → Anthropic SDK(httpx) 내부에서 한글 처리 시 UnicodeEncodeError.
-# 해결: stdout/stderr 를 UTF-8 devnull 스트림으로 교체.
+# 해결: PYTHONUTF8 모드 강제 + stdout/stderr 를 UTF-8 스트림으로 교체.
 os.environ["PYTHONIOENCODING"] = "utf-8"
+os.environ["PYTHONUTF8"] = "1"          # Python 전역 UTF-8 모드 (3.7+)
+os.environ["LC_ALL"] = "C.UTF-8"        # locale 기반 fallback 도 UTF-8
+os.environ["LANG"] = "C.UTF-8"
 
 def _ensure_utf8_stream(stream, name):
     """stdout/stderr 를 UTF-8 스트림으로 보장. None 이면 devnull 로 교체."""
@@ -43,6 +46,14 @@ def _ensure_utf8_stream(stream, name):
 
 sys.stdout = _ensure_utf8_stream(sys.stdout, "stdout")
 sys.stderr = _ensure_utf8_stream(sys.stderr, "stderr")
+
+# Python 3.7+ reconfigure (이미 열려있는 스트림의 인코딩 재설정)
+for _s in (sys.stdout, sys.stderr):
+    try:
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # .env 자동 로드 (있을 때만)
 try:
