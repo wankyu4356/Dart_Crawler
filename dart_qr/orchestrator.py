@@ -579,6 +579,11 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
     if raw_filled:
         log(f"  D&A raw 피벗 (무비용): {raw_filled}개 항목 보강")
 
+    # 5.6) outlier scrub — D&A/dep/amort 비정상 값 자동 제거
+    n_scrubbed = fin_mod.scrub_outliers(fin, log=log)
+    if n_scrubbed:
+        log(f"  ⚠ outlier {n_scrubbed}건 제거 (비정상 D&A 등)")
+
     # 6) 주주/지배구조
     if is_listed:
         log(f"[6/7] 주주·지배구조 수집")

@@ -161,7 +161,13 @@ DEP_EXPLICIT_PATS = [
     "감가상각비용",
 ]
 DEP_GENERAL = "감가상각"
-DEP_EXCL_WORDS = ["무형", "사용권", "리스"]
+DEP_EXCL_WORDS = [
+    "무형", "사용권", "리스",
+    # BS 잔액·누적 계정이 D&A 패턴에 혼입되는 것 방지
+    "누계", "잔액", "장부가", "취득가", "취득금액",
+    # 처분/손상 관련 — D&A 가 아님
+    "처분", "환입", "손상",
+]
 AMORT_PATS = [
     "무형자산상각비에대한조정",
     "무형자산상각비",
@@ -573,6 +579,22 @@ def fill_da_from_raw(fin: "FinancialsBundle") -> int:
                 yf.values["ebitdam"] = yf.values["ebitda"] / rev * 100.0
         return True
 
+    # ── outlier 가드: 연도별 D&A 중 다른 해 대비 5배+ 는 제거 ──────
+    # 케이씨티시 2021 D&A=11.73조 같은 비정상 방지
+    import statistics as _st
+    for pv in (pivot_cfs, pivot_ofs, pivot_any):
+        for kind in ("da_total", "dep", "amort"):
+            all_vals = {yr: s.get(kind) for yr, s in pv.items() if s.get(kind)}
+            if len(all_vals) < 2:
+                continue
+            vals_list = list(all_vals.values())
+            med = _st.median(vals_list)
+            if med <= 0:
+                continue
+            for yr, v in list(all_vals.items()):
+                if v > med * 5.0:
+                    del pv[yr][kind]
+
     filled = 0
     # hybrid annual: 통합 pivot 사용
     for yf in fin.annual:
@@ -589,6 +611,46 @@ def fill_da_from_raw(fin: "FinancialsBundle") -> int:
         if _apply(yf, p):
             filled += 1
     return filled
+
+
+def scrub_outliers(fin: "FinancialsBundle", log=None) -> int:
+    """모든 연도 데이터에서 outlier 자동 제거.
+
+    D&A/dep/amort/ebitda 에 대해:
+    - 다른 연도 중앙값의 5배 초과 → outlier, None 처리
+    - D&A > revenue * 50% → 비정상, None 처리
+    파생(EBITDA/EBITDAM) 도 연쇄 무효화.
+    """
+    import statistics as _st
+    cleaned = 0
+    for lst in (fin.annual, getattr(fin, "annual_cfs", []) or [],
+                getattr(fin, "annual_ofs", []) or []):
+        if not lst:
+            continue
+        for key in ("dep", "amort", "da"):
+            values = [(yf, yf.values.get(key)) for yf in lst
+                      if yf.values.get(key) is not None]
+            if len(values) < 2:
+                continue
+            vs = [v for _, v in values]
+            med = _st.median(vs)
+            if med <= 0:
+                continue
+            for yf, v in values:
+                rev = yf.values.get("revenue") or 0
+                is_outlier = v > med * 5.0
+                is_above_rev = key == "da" and rev > 0 and v > rev * 0.5
+                if is_outlier or is_above_rev:
+                    if log:
+                        log(f"  ⚠ outlier scrub: {yf.year} {key}="
+                            f"{v:,.0f} (med={med:,.0f}, rev={rev:,.0f}) → None")
+                    yf.values[key] = None
+                    if key in ("dep", "amort"):
+                        yf.values["da"] = None
+                    yf.values["ebitda"] = None
+                    yf.values["ebitdam"] = None
+                    cleaned += 1
+    return cleaned
 
 
 def fetch_annual_financials(
