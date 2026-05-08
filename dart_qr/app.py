@@ -240,6 +240,14 @@ class App(tk.Tk):
         ttk.Checkbutton(left, text="디버그 로그 파일 저장",
                         variable=self.var_save_log).grid(
             row=1, column=0, columnspan=3, sticky="w", padx=2, pady=(4, 0))
+
+        self.var_pack_reports = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            left,
+            text="사업·감사보고서 원본 ZIP 패키지 (HTML, 브라우저로 PDF 출력)",
+            variable=self.var_pack_reports,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=2, pady=(2, 0))
+
         left.grid_columnconfigure(1, weight=1)
 
         right = ttk.Labelframe(inner, text=" LLM (Claude) ", style="Card.TLabelframe")
@@ -459,6 +467,7 @@ class App(tk.Tk):
             anthropic_model=self.var_model.get().strip() or None,
             save_log=bool(self.var_save_log.get()),
             use_enf_pe_key=bool(self.var_enf_pe_key.get()),
+            pack_reports=bool(self.var_pack_reports.get()),
         )
         self._running = True
         self.btn_run.config(state="disabled", text="  분석 중…")

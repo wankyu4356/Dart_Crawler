@@ -57,6 +57,7 @@ class RunConfig:
     anthropic_model: Optional[str] = None   # None 이면 config.ANTHROPIC_MODEL 사용
     save_log: bool = True             # 상세 로그 파일(_log_회사_시각.txt) 저장 여부
     use_enf_pe_key: bool = False      # DART OpenAPI: E&F PE 전용 키 사용 여부
+    pack_reports: bool = False        # 사업보고서/감사보고서 원본 ZIP 으로 묶기
 
     def needs_llm(self) -> bool:
         """어느 하나라도 Claude 가 필요한 작업이 켜져 있는가?"""
@@ -810,6 +811,18 @@ def _run_quickreport_impl(cfg: RunConfig, log: LogFn) -> RunResult:
                    exec_summary=exec_summary, business=biz, footnotes=footnotes)
     else:
         log(f"  ⚠ 재검수 3회 후에도 이슈 잔존 — 수동 검토 필요")
+
+    # ─── 10) 사업보고서/감사보고서 원본 ZIP 패키지 ─────────────────────
+    if cfg.pack_reports and discs:
+        log(f"\n[추가] 보고서 원본 ZIP 패키지 생성")
+        from . import report_archive as _ra
+        zip_path = os.path.join(cfg.output_dir, base + "_보고서묶음.zip")
+        try:
+            _ra.pack_disclosure_archive(
+                discs, zip_path, log=log, limit=cfg.body_limit or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ⚠ ZIP 패키지 오류: {exc}")
 
     return RunResult(
         excel_path=xlsx_path, html_path=html_path,
